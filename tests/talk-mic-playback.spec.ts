@@ -732,8 +732,37 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     expect(constructedAudio).toHaveLength(0)
   })
 
-  it('the cap cancels a reply that is still speaking: cancel is called once, and the next reply starts only after it, not over it', async () => {
-    // The flag stays true, so the 900 s cap (armed at the 0.7 s speak) releases b1 while it is still audible.
+  it('the start latch holds (P6-5): after an earlier onstart, a reply that never fires onstart is not released by two false reads after its fallback', async () => {
+    // b0 fires onstart, which sets the engine's latch. b1 never fires onstart. Its flag is seen true, then reads
+    // false twice after its 2 s fallback. With the latch, the fallback is off, so b1 is held to its bound.
+    // Removing the `!engine.firesStart` guard (mutant M6e) releases b1 before the 5 s check, and this test fails.
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b0', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    speech.speaking = true
+    speech.spoken[0]?.onstart?.()
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(2_000)
+    speech.speaking = false
+    speech.spoken[0]?.onend?.()
+    await advanceTo(2_100)
+    expect(speech.spoken).toHaveLength(2)
+    speech.speaking = true
+    remote.latestValue = utterance('n1')
+    await advanceTo(4_500)
+    speech.speaking = false
+    await advanceTo(5_000)
+    expect(constructedAudio).toHaveLength(0)
+  })
+
+  it('the cap does not cancel a reply whose onstart never fired, even while the flag reads true: the next clip starts over it (named limit 1)', async () => {
+    // The flag stays true, and this engine never fires onstart for b1. The cap (armed at the 0.7 s speak)
+    // releases b1 at 900.7 s. Its speech is unattributable: thisSpeaking is unknown, so no cancel runs,
+    // and the next clip starts while the flag still reads true. This is the accepted overlap, asserted here.
     stubSpeech(true)
     remote.latestValue = null
     mount()
@@ -741,6 +770,29 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     remote.latestValue = browserReply('b1', 200)
     await advanceTo(SPEECH_POLL_MS)
     expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(900_000)
+    expect(constructedAudio).toHaveLength(0)
+    expect(speech.cancels).toBe(0)
+    await advanceTo(901_000)
+    expect(speech.cancels).toBe(0)
+    expect(constructedAudio).toHaveLength(1)
+    expect(speakingAtAudioStart).toEqual([true])
+    await advanceTo(1_000_000)
+    expect(speech.cancels).toBe(0)
+  })
+
+  it('the cap cancels a reply whose onstart fired: cancel is called once, and the next reply starts only after it, not over it', async () => {
+    // onstart fires for b1 at the 0.7 s speak, so thisSpeaking is true. The 900 s cap releases b1 while it is audible, and
+    // the cancel runs first.
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    speech.spoken[0]?.onstart?.()
     remote.latestValue = utterance('n1')
     await advanceTo(900_000)
     expect(constructedAudio).toHaveLength(0)
@@ -800,7 +852,8 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
 
   it('the bound releases a reply whose flag still reads true: cancel is called once, at the bound, and the next clip starts after it', async () => {
     // The speaking poll is stalled, so the flag is never read. The 200-character reply is bounded at 125.7 s
-    // (125 s ceiling plus margin, armed at its 0.7 s start) while the engine still speaks. Only the release hook can cancel it.
+    // (125 s ceiling plus margin, armed at its 0.7 s start) while the engine still speaks. onstart fires for b1,
+    // so thisSpeaking is true and only the release hook can cancel it.
     stubSpeech(true)
     remote.latestValue = null
     mount()
@@ -809,6 +862,7 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     remote.latestValue = browserReply('b1', 200)
     await advanceTo(SPEECH_POLL_MS)
     expect(speech.spoken).toHaveLength(1)
+    speech.spoken[0]?.onstart?.()
     remote.latestValue = utterance('n1')
     await advanceTo(125_700 - 1)
     expect(speech.cancels).toBe(0)
@@ -842,7 +896,9 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
 
   it('the reply ends by itself while another utterance keeps the flag true: the bound cancels nothing, so that speech is not cut', async () => {
     // The flag stays true after this reply's end, as it would while another talk button's utterance is audible.
-    // Only a release hook that also runs on the task's own settle would cancel here.
+    // onstart fires first, so thisSpeaking is true, and onend then clears it as the rule says. This test does not
+    // separately observe that clear: once a task settles the chain drops its release handlers and finish() clears
+    // the cap, so no cancel path can run after onend. Mutant M8d (onend keeps thisSpeaking) is therefore equivalent.
     stubSpeech(true)
     remote.latestValue = null
     mount()
@@ -850,6 +906,7 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     remote.latestValue = browserReply('b1', 200)
     await advanceTo(SPEECH_POLL_MS)
     expect(speech.spoken).toHaveLength(1)
+    speech.spoken[0]?.onstart?.()
     speech.spoken[0]?.onend?.()
     await advanceTo(130_000)
     expect(speech.cancels).toBe(0)
@@ -863,6 +920,7 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     stallSpeakingPoll()
     remote.latestValue = browserReply('b1', 200)
     await advanceTo(SPEECH_POLL_MS)
+    speech.spoken[0]?.onstart?.()
     remote.latestValue = { ...browserReply('n1', 10), text: 'next reply' }
     await advanceTo(125_700)
     expect(speech.order).toEqual([`speak:${'a'.repeat(200)}`, 'cancel', 'speak:next reply'])

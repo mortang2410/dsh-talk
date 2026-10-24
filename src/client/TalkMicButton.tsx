@@ -41,7 +41,7 @@ export interface TalkMicInjected {
   /** Serve one cached utterance's audio. */
   audio: (utteranceId: string) => Promise<TalkAudio | null>
   /** Read the newest utterance of one session (playback poll). */
-  latest: (sessionId: string) => Promise<TalkLatest | null>
+  latest: (sessionId: string, signal?: AbortSignal) => Promise<TalkLatest | null>
   /** Write the transcription into the composer draft. */
   setDraft: (text: string) => void
   /** Send the transcription as a user message. */
@@ -151,14 +151,29 @@ function readSpeaking(): boolean | null {
  * reads, SPEAKING_POLL_MS apart. The poll stops once `released` reports that
  * the chain has moved on.
  *
- * A release for any reason cancels speech that is still audible. That covers the
- * absolute cap (PLAYBACK_ABSOLUTE_MAX_MS) and the chain's bound, which releases
- * the reply when the speaking poll has stopped ticking, as in a throttled or
- * hidden tab. The release handler runs before the chain starts the next reply,
- * so the cancel never cuts a later reply. When the flag reads false, nothing is
- * cancelled. `speechSynthesis.cancel()` clears the page's whole speech queue: on
- * a page with more than one mounted talk button, it also stops any other
- * utterance that is queued or speaking.
+ * A release for any reason cancels this reply's speech, and only this reply's.
+ * That covers the absolute cap (PLAYBACK_ABSOLUTE_MAX_MS) and the chain's bound,
+ * which releases the reply when the speaking poll has stopped ticking, as in a
+ * throttled or hidden tab. The flag `speechSynthesis.speaking` is page-wide, so
+ * it cannot say whose speech is audible. The cancel therefore runs only when
+ * `thisSpeaking` is true: set by this utterance's `onstart`, cleared by its
+ * `onend` and `onerror`. When `thisSpeaking` is false, nothing is cancelled. When
+ * it is still unknown because the engine never fired `onstart`, nothing is
+ * cancelled either. The release handler runs before the chain starts the next
+ * reply, so the cancel never cuts a later reply. `speechSynthesis.cancel()`
+ * clears the page's whole speech queue, so on a page with more than one mounted
+ * talk button it can also stop another button's utterance that is queued.
+ *
+ * Named limits, accepted in round 8 and not fixed:
+ * 1. An engine that never fires `onstart`: no cancel is made, so a reply that
+ *    runs past its bound can overlap the next clip.
+ * 2. An engine that fires `onstart` only for its first utterance: later replies
+ *    are held off the two-read fallback and wait for their bound instead of
+ *    releasing on a false read. The bound is the length-based ceiling plus
+ *    PLAYBACK_MARGIN_MS (5 s): 125 s for a 200-character reply, longer for a longer one.
+ *    This is a hold, not an overlap.
+ * 3. A reply longer than PLAYBACK_ABSOLUTE_MAX_MS (900 s) is cut at the cap, so
+ *    its tail is never spoken and the listener is not told.
  *
  * Before speaking, `onDuration` receives an inactivity ceiling in seconds:
  * `min(PLAYBACK_CEILING_MAX_MS, max(PLAYBACK_CAP_MS, text.length *
@@ -203,6 +218,9 @@ function speakWithBrowserVoice(
     onDuration(ceilingSeconds)
     let finished = false
     let started = false
+    // This utterance's own state: true from its onstart, false after its onend or onerror,
+    // undefined while the engine has not fired onstart for it. Only true allows a cancel.
+    let thisSpeaking: boolean | undefined
     let fallbackDue = false
     let seenSpeaking = false
     // Consecutive false reads counted on the never-onstart fallback; a true read resets it.
@@ -219,27 +237,35 @@ function speakWithBrowserVoice(
       if (absoluteCap !== undefined) clearTimeout(absoluteCap)
       resolve()
     }
-    // The chain's bound releases this reply, and the next reply starts only after
-    // this handler returns. The flag still reading true means the reply is audible,
-    // so it is cancelled here, in the same form as the cap path.
-    onRelease(() => {
-      if (readSpeaking() === true) {
-        try {
-          speechSynthesis.cancel()
-        } catch {
-          // The engine refused the cancel; the reply still releases.
-        }
+    // Cancel this reply's speech, and only when this utterance is known to be speaking.
+    // A page-wide flag that reads true may be another reply's speech, so it is not enough.
+    const cancelOwnSpeech = (): void => {
+      if (thisSpeaking !== true || readSpeaking() !== true) return
+      try {
+        speechSynthesis.cancel()
+      } catch {
+        // The engine refused the cancel; the reply still releases.
       }
+    }
+    onRelease(() => {
+      cancelOwnSpeech()
       // Clear the poll and the cap now. Otherwise the cap could fire later and
       // cancel a reply that started after this one.
       finish()
     })
     utterance.onstart = () => {
       started = true
+      thisSpeaking = true
       engine.firesStart = true
     }
-    utterance.onend = finish
-    utterance.onerror = finish
+    utterance.onend = () => {
+      thisSpeaking = false
+      finish()
+    }
+    utterance.onerror = () => {
+      thisSpeaking = false
+      finish()
+    }
     speechSynthesis.speak(utterance)
     // The utterance may have ended synchronously; never start a poll after that.
     if (finished) return
@@ -247,14 +273,8 @@ function speakWithBrowserVoice(
       fallbackDue = true
     }, ENGINE_START_FALLBACK_MS)
     absoluteCap = setTimeout(() => {
-      // The chain releases this reply now. If the flag still reads true, the speech is audible: cancel it first.
-      if (readSpeaking() === true) {
-        try {
-          speechSynthesis.cancel()
-        } catch {
-          // The engine refused the cancel; the reply still releases.
-        }
-      }
+      // The chain releases this reply now. Cancel only this reply's own speech, then release.
+      cancelOwnSpeech()
       finish()
     }, PLAYBACK_ABSOLUTE_MAX_MS)
     timer = setInterval(() => {
