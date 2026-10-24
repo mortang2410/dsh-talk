@@ -13,12 +13,14 @@
 
 import { sanitizeText } from './sanitize.ts'
 
-/** Loopback endpoint of the resident 27B (`HEAL-PROMPT.md`, Request). The served id names the
- * artifact: `scuba-27b` is the Swift 1.5 Qwen3.8-27B IQ3_XXS build with an MTP head. */
-export const HEAL_ENDPOINT = 'http://127.0.0.1:8082/v1/chat/completions'
+/** Endpoint of the resident 27B (`HEAL-PROMPT.md`, Request), reached through Bifrost on
+ * 8090 so every heal call leaves a gateway log row with its alias and token counts. A
+ * direct call to 8082 works and is never used: Bifrost is the log of record. */
+export const HEAL_ENDPOINT = 'http://127.0.0.1:8090/v1/chat/completions'
 
-/** Model id sent in the request body; it is what the endpoint serves. */
-export const HEAL_MODEL = 'scuba-27b'
+/** Model id sent in the request body: the Bifrost alias, never the raw served id. The
+ * alias `qwen-strata` resolves to `scuba-27b`, the Swift 1.5 Qwen3.8-27B IQ3_XXS build. */
+export const HEAL_MODEL = 'strata/qwen-strata'
 
 /**
  * Abort timeout for the heal call, in milliseconds. It is a guard against a wedged

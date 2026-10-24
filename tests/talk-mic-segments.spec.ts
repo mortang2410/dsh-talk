@@ -19,7 +19,7 @@ const TICK_MS = 500
 const SPEECH_LEVEL = 0.2
 /**
  * The model endpoint as the host sees it. The host's `talk/heal` runs `healTranscript`
- * against it; the browser must never fetch it, and nothing here points at port 8082.
+ * against it; the browser must never fetch it, and nothing here points at port 8090.
  */
 const HOST_MODEL_URL = 'http://host-model.test/v1/chat/completions'
 
@@ -152,7 +152,7 @@ class FakeOfflineAudioContext {
 
 /**
  * The stubbed global `fetch`. Only the host's model URL answers; any other URL, such as the
- * loopback `127.0.0.1:8082`, is recorded and fails, so a browser-side heal call shows up in
+ * loopback `127.0.0.1:8090`, is recorded and fails, so a browser-side heal call shows up in
  * `fetched` and breaks the test that checks it.
  */
 async function fakeFetch(url: string, init?: { body?: string }): Promise<unknown> {
@@ -191,10 +191,10 @@ function holdHeals(): void {
   })
 }
 
-/** On every path, the browser made only the host's heal calls, and never fetched the heal endpoint on port 8082. */
+/** On every path, the browser made only the host's heal calls, and never fetched the heal endpoint on port 8090. */
 function expectHostOnlyFetches(): void {
   expect(fetched).toEqual(healCalls.map(() => HOST_MODEL_URL))
-  expect(fetched.filter(url => url.includes(':8082'))).toEqual([])
+  expect(fetched.filter(url => url.includes(':8090'))).toEqual([])
 }
 
 let container: HTMLElement
@@ -511,7 +511,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     expect(healCalls).toEqual(['first sentence', 'first sentence second sentence'])
     expect(fetched).toEqual(healCalls.map(() => HOST_MODEL_URL))
-    expect(fetched.filter(url => url.includes(':8082'))).toEqual([])
+    expect(fetched.filter(url => url.includes(':8090'))).toEqual([])
   })
 
   it('a trigger from the host heal route submits the cleaned prompt and closes the capture', async () => {
