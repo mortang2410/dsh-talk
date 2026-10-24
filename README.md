@@ -132,7 +132,8 @@ All tunables are Schemastery `Config` fields (changeable from cordis.yml). `cord
 | `tts.browser.pitch` | `1` | Browser SpeechSynthesis pitch (0..2) |
 | `tts.piper.modelPath` | *(none)* | piper voice model; required when the engine is `piper` |
 | `announce.enabled` | `true` | Master switch for event announcements |
-| `announce.onTurnEnd` / `onApproval` / `onError` | `true` | Which events are spoken |
+| `announce.onTurnEnd` | `false` | Speak a fixed phrase after every turn (off: the model speaks its own paraphrase) |
+| `announce.onApproval` / `onError` | `true` | Which other events are spoken |
 | `announce.messages.*` | *"Turn complete." etc.* | Spoken phrases |
 | `interrupt` | `true` | Talking stops current playback |
 | `maxSpeakChars` | `20000` | Cap on the speak tool's text length (1..100000) |

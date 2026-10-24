@@ -122,7 +122,8 @@ Todos os ajustes são campos `Config` do Schemastery (alteráveis pelo cordis.ym
 | `tts.browser.pitch` | `1` | Tom do SpeechSynthesis do navegador (0..2) |
 | `tts.piper.modelPath` | *(nenhuma)* | Modelo de voz piper; obrigatório com o motor `piper` |
 | `announce.enabled` | `true` | Interruptor mestre de anúncios |
-| `announce.onTurnEnd` / `onApproval` / `onError` | `true` | Quais eventos são falados |
+| `announce.onTurnEnd` | `false` | Dizer uma frase fixa apos cada turno (desligado: o modelo fala sua propria parafrase) |
+| `announce.onApproval` / `onError` | `true` | Quais outros eventos sao falados |
 | `announce.messages.*` | *"Turn complete." etc.* | Frases faladas |
 | `interrupt` | `true` | Falar para a reprodução atual |
 | `maxSpeakChars` | `20000` | Limite do texto da ferramenta speak (1..100000) |

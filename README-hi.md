@@ -122,7 +122,8 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 | `tts.browser.pitch` | `1` | ब्राउज़र SpeechSynthesis पिच (0..2) |
 | `tts.piper.modelPath` | *(कोई नहीं)* | piper वॉइस मॉडल; `piper` इंजन के लिए आवश्यक |
 | `announce.enabled` | `true` | घोषणाओं का मास्टर स्विच |
-| `announce.onTurnEnd` / `onApproval` / `onError` | `true` | कौन से इवेंट बोले जाएँ |
+| `announce.onTurnEnd` | `false` | हर टर्न के बाद एक निश्चित वाक्य बोलें (बंद: मॉडल अपनी परिभाषा बोलता है) |
+| `announce.onApproval` / `onError` | `true` | कौन से अन्य इवेंट बोले जाएँ |
 | `announce.messages.*` | *"Turn complete." आदि* | बोले जाने वाले वाक्य |
 | `interrupt` | `true` | बोलते ही चलता प्लेबैक रुकता है |
 | `maxSpeakChars` | `20000` | speak टूल के टेक्स्ट की सीमा (1..100000) |

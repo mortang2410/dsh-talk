@@ -131,7 +131,8 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 | `tts.browser.pitch` | `1` | 浏览器 SpeechSynthesis 音高（0..2） |
 | `tts.piper.modelPath` | *(无)* | piper 语音模型；引擎为 `piper` 时必填 |
 | `announce.enabled` | `true` | 事件播报总开关 |
-| `announce.onTurnEnd` / `onApproval` / `onError` | `true` | 播报哪些事件 |
+| `announce.onTurnEnd` | `false` | 每回合后播报固定语句（关闭：由模型播报自己的转述） |
+| `announce.onApproval` / `onError` | `true` | 播报哪些其他事件 |
 | `announce.messages.*` | *"Turn complete." 等* | 播报话术 |
 | `interrupt` | `true` | 开始说话即停止当前播放 |
 | `maxSpeakChars` | `20000` | speak 工具文本上限（1..100000） |

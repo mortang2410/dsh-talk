@@ -81,8 +81,9 @@
         announce:
           # Master switch for all event announcements.
           enabled: true
-          # Announce turn completion.
-          onTurnEnd: true
+          # Announce turn completion. Off: the model speaks its own paraphrase, and this
+          # fixed phrase would talk over it.
+          onTurnEnd: false
           # Announce pending approvals.
           onApproval: true
           # Announce errors.
