@@ -494,3 +494,17 @@ describe('a model trigger with nothing to send: the host form set', () => {
     expect(result).toEqual({ trigger: true, prompt: 'write a haiku', source: 'model' })
   })
 })
+
+describe('a model trigger with an empty prompt and no anchor', () => {
+  it('refuses instead of dropping the speech when no literal form ends the transcript', async () => {
+    // Breaks if: an unlocatable trigger with nothing to send discards the utterance. The capture
+    // must stay open, because a silent drop is the failure this feature cannot have.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": ""}')
+    const overrides: string[] = []
+    const raw = 'write a haiku that is my promt'
+    const result = await healTranscript(raw, { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: (m) => overrides.push(m) })
+    expect(result).toEqual({ trigger: false, prompt: raw, source: 'model' })
+    expect(overrides).toHaveLength(1)
+  })
+})

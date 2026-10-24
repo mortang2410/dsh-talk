@@ -180,11 +180,16 @@ function checkModelDecision(
   // host form set is used here, not the fallback's, because the model has already recognised
   // the phrase and a spelling such as "thats my prompt" must not lose the words before it.
   const before = promptBeforeFinalPhrase(rawTranscript, HOST_FINAL_PHRASE)
-  if (before !== null && before !== '') {
+  if (before !== null) {
+    if (before === '') return { trigger: true, prompt: '', source: 'model' }
     logOverride('dsh-talk heal: model answered trigger true with an empty prompt; using the text before the trigger phrase')
     return { trigger: true, prompt: before, source: 'model' }
   }
-  return { trigger: true, prompt: '', source: 'model' }
+  // Nothing to send and no literal form to anchor a recovery: the model fired on something this
+  // host cannot locate, most likely a misheard variant. Refuse rather than drop the speech, so
+  // the capture stays open and the speaker can carry on or stop.
+  logOverride('dsh-talk heal: model answered trigger true with an empty prompt and no literal trigger phrase ends the transcript; overridden to trigger false')
+  return { trigger: false, prompt: rawTranscript, source: 'model' }
 }
 
 /**
