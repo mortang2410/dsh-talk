@@ -76,6 +76,13 @@ const FINAL_LITERAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
  * The three literal forms the host check uses on a model answer: the two above plus
  * "thats my prompt". A variant such as "promt" matches none of them, so the host never
  * vetoes or strips it: the model decides.
+ *
+ * This set is deliberately wider than the fallback's, because the two checks guard opposite
+ * mistakes. The fallback decides whether to SEND, so it is narrow: a wrong send is worse than
+ * a missed one, and the apostrophe-less spelling is not accepted there. The host check
+ * decides whether to send EARLY, so it is wide: any literal form found away from the end is
+ * evidence that the model read the transcript wrong, and the wider set catches more of those
+ * without touching the variants only the model can recognise.
  */
 const HOST_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b/iu
 const HOST_FINAL_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b[.!?]?\s*$/iu
