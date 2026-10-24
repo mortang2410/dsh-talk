@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { Config, resolveConfig, MAX_RECORD_SECONDS } from '../src/config.ts'
+import { Config, resolveConfig, MAX_CEILING_SECONDS, MAX_RECORD_SECONDS } from '../src/config.ts'
 import { resolveSttEngine, resolveTtsEngine } from '../src/service.ts'
 
 describe('Config schema', () => {
@@ -33,6 +33,15 @@ describe('Config schema', () => {
 
   it('rejects a recording cap above the ceiling', () => {
     expect(() => Config({ record: { maxSeconds: MAX_RECORD_SECONDS + 1 } })).toThrow()
+  })
+
+  it('defaults the segmented-capture ceiling to 600 seconds and rejects a value above its own maximum', () => {
+    // record.ceilingSeconds governs only the segmented capture; record.maxSeconds stays the legacy cap.
+    const normalized = Config({}) as { record: { ceilingSeconds: number; maxSeconds: number } }
+    expect(normalized.record.ceilingSeconds).toBe(600)
+    expect(normalized.record.maxSeconds).toBe(60)
+    expect(resolveConfig({}).recordCeilingSeconds).toBe(600)
+    expect(() => Config({ record: { ceilingSeconds: MAX_CEILING_SECONDS + 1 } })).toThrow()
   })
 
   it('rejects an unknown STT engine', () => {

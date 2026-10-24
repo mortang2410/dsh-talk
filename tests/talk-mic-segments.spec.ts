@@ -35,7 +35,7 @@ const SETTINGS: TalkStatus = {
     browser: { voiceName: null, rate: 1, pitch: 1 },
   },
   announce: { enabled: false, onTurnEnd: false, onApproval: false, onError: false },
-  record: { enabled: true, hotkey: null, maxSeconds: 60, autoSubmit: false, vad: { enabled: true, silenceMs: 1000, energyThreshold: 0.01 } },
+  record: { enabled: true, hotkey: null, maxSeconds: 60, ceilingSeconds: 600, autoSubmit: false, vad: { enabled: true, silenceMs: 1000, energyThreshold: 0.01 } },
   interrupt: false,
   patchFile: null,
 }
@@ -52,6 +52,15 @@ const healCalls: string[] = []
 const fetched: string[] = []
 /** Transcripts the stubbed transcriber returns, one per call. */
 let transcriptQueue: string[] = []
+/** How many of the next transcriber calls throw. */
+let transcribeFailures = 0
+/** When true, a page-requested stop fires its onstop later, as the W3C stop steps do. */
+let asyncStops = false
+/** Microphone tracks stopped so far (every track the button releases). */
+let trackStops = 0
+/** When set, every host heal call waits on it before answering (the call is in flight). */
+let healGate: Promise<void> | null = null
+let openHealGate: () => void = () => {}
 /** The microphone level the stubbed analyser reports. */
 let micLevel = 0
 /** What the host's model call does: answer like the model, or fail (the host fallback then decides). */
@@ -96,10 +105,25 @@ class FakeRecorder {
     this.state = 'recording'
     recorders.push(this)
   }
+  /** The page asked the recorder to stop: state turns inactive now, and the onstop follows (queued when asyncStops). */
   stop(): void {
+    if (this.state === 'inactive') return
     this.state = 'inactive'
-    this.ondataavailable?.({ data: new FakeBlob([new Uint8Array([1, 2, 3, 4])]) })
-    this.onstop?.()
+    this.deliver(asyncStops)
+  }
+  /** The browser ended the recorder by itself. The W3C stop steps queue its onstop, so it is always async here. */
+  selfStop(): void {
+    if (this.state === 'inactive') return
+    this.state = 'inactive'
+    this.deliver(true)
+  }
+  private deliver(later: boolean): void {
+    const fire = (): void => {
+      this.ondataavailable?.({ data: new FakeBlob([new Uint8Array([1, 2, 3, 4])]) })
+      this.onstop?.()
+    }
+    if (later) setTimeout(fire, 0)
+    else fire()
   }
 }
 
@@ -151,12 +175,26 @@ async function fakeFetch(url: string, init?: { body?: string }): Promise<unknown
  */
 async function hostHeal(rawTranscript: string): Promise<TalkHeal> {
   healCalls.push(rawTranscript)
+  if (healGate !== null) await healGate
   try {
     const decision = await healTranscript(rawTranscript, { endpoint: HOST_MODEL_URL, logRawTranscript: () => {} })
     return { trigger: decision.trigger, prompt: decision.prompt, source: decision.source }
   } catch (error) {
     throw new Error(`talk.heal failed: INTERNAL: ${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+/** Hold every host heal call in flight until openHealGate runs. */
+function holdHeals(): void {
+  healGate = new Promise<void>((resolve) => {
+    openHealGate = resolve
+  })
+}
+
+/** On every path, the browser made only the host's heal calls, and never fetched the heal endpoint on port 8082. */
+function expectHostOnlyFetches(): void {
+  expect(fetched).toEqual(healCalls.map(() => HOST_MODEL_URL))
+  expect(fetched.filter(url => url.includes(':8082'))).toEqual([])
 }
 
 let container: HTMLElement
@@ -172,6 +210,10 @@ function mount(settings: TalkStatus = SETTINGS): void {
     interrupt: async () => ({ stopped: false }),
     transcribe: async (audioData: string): Promise<TalkTranscript> => {
       transcribed.push(audioData)
+      if (transcribeFailures > 0) {
+        transcribeFailures -= 1
+        throw new Error('engine down')
+      }
       return { text: transcriptQueue.shift() ?? '', engine: 'funasr', language: 'en-US' }
     },
     audio: async () => null,
@@ -253,6 +295,11 @@ beforeEach(() => {
   transcriptQueue = []
   micLevel = 0
   healMode = 'model'
+  transcribeFailures = 0
+  asyncStops = false
+  trackStops = 0
+  healGate = null
+  openHealGate = () => {}
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
     if (args[0] === '[dsh-talk] segment raw transcript:') events.push(`segment:${String(args[1])}`)
   })
@@ -264,7 +311,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fakeFetch)
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
-    value: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => {} }] }) },
+    value: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => { trackStops += 1 } }] }) },
   })
   container = document.createElement('div')
   document.body.append(container)
@@ -395,6 +442,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     expect(sent).toEqual(['first sentence'])
     expect(recording()).toBe(false)
+    expectHostOnlyFetches()
   })
 
   it('keeps the capture open and shows the error when the heal endpoint fails and there is no phrase', async () => {
@@ -407,6 +455,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(recording()).toBe(true)
     expect(sent).toEqual([])
     expect(errorText()).toContain('does not end with the trigger phrase')
+    expectHostOnlyFetches()
   })
 
   it('logs each segment raw transcript before the heal call that judges it', async () => {
@@ -488,5 +537,122 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(errorText()).toBe(
       'heal failed: talk.heal failed: INTERNAL: heal call failed (endpoint responded 500) and the transcript does not end with the trigger phrase',
     )
+    expectHostOnlyFetches()
+  })
+
+  it('unmounting mid-capture releases the microphone and the recorder, and a heal answer that arrives later submits nothing', async () => {
+    // Blocker 1 (P-F6): the stale closure must not submit, and nothing may keep recording.
+    transcriptQueue = ['first sentence', 'second sentence that is my prompt']
+    holdHeals()
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    const open = recorders[recorders.length - 1]
+    expect(open?.state).toBe('recording')
+    unmount()
+    expect(trackStops).toBeGreaterThan(0)
+    expect(open?.state).toBe('inactive')
+    const started = recorders.length
+    openHealGate()
+    await flush()
+    micLevel = SPEECH_LEVEL
+    await advance(5000)
+    micLevel = 0
+    expect(recorders).toHaveLength(started)
+    expect(sent).toEqual([])
+    expect(drafts).toEqual([])
+  })
+
+  it('a trigger answered after the 120-second trip is dropped, and the transcript stays in the composer unsent', async () => {
+    // Blocker 2 (P-F2): the answer lands after the trip; it must not submit.
+    transcriptQueue = ['hello that is my prompt']
+    holdHeals()
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await advance(121_000)
+    expect(recording()).toBe(false)
+    expect(drafts).toEqual([])
+    openHealGate()
+    await flush()
+    expect(sent).toEqual([])
+    expect(drafts).toEqual(['hello that is my prompt'])
+  })
+
+  it('a segmented capture ends at record.ceilingSeconds with its transcript in the composer unsent', async () => {
+    // Item 4: sustained sound ends the capture at the ceiling, the same way the silence trip does.
+    transcriptQueue = ['long speech']
+    await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, ceilingSeconds: 30 } })
+    await startCapture()
+    await speak(29_000)
+    expect(recording()).toBe(true)
+    await speak(3000)
+    expect(recording()).toBe(false)
+    expect(transcribed).toHaveLength(1)
+    expect(healCalls).toEqual([])
+    expect(sent).toEqual([])
+    expect(drafts).toEqual(['long speech'])
+  })
+
+  it('the last segment reaches the draft when the browser fires its onstop after the user stops', async () => {
+    // Item 5 regression: the W3C stop steps are asynchronous; the draft waits for the last onstop.
+    asyncStops = true
+    transcriptQueue = ['first part', 'last words']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['first part last words'])
+    expect(sent).toEqual([])
+  })
+
+  it('a recorder that stops by itself ends its segment, and speech after it starts a new segment at once', async () => {
+    // Item 5 (P-F1): the dead window must not drop speech, and no segment may be lost from the draft.
+    transcriptQueue = ['first part', 'second part']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    recorders[0]?.selfStop()
+    await speak(1000)
+    await advance(1000)
+    await flush()
+    expect(recorders).toHaveLength(2)
+    expect(transcribed).toHaveLength(2)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['first part second part'])
+  })
+
+  it('a transcription failure keeps the capture open, shows the error, and later words still reach the draft', async () => {
+    // Item 6: the failed segment's words are lost and named; the capture stays open.
+    transcribeFailures = 1
+    transcriptQueue = ['second sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(recording()).toBe(true)
+    expect(errorText()).toBe("transcription failed, so this segment's words are lost: engine down")
+    expect(sent).toEqual([])
+    await speak(1000)
+    await advance(1000)
+    expect(recording()).toBe(true)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    expect(drafts).toEqual(['second sentence'])
   })
 })

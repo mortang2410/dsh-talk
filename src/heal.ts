@@ -53,6 +53,8 @@ export interface HealOptions {
   timeoutMs?: number
   /** Receives the raw transcript before the request is sent. Defaults to `console.log`. */
   logRawTranscript?: (rawTranscript: string) => void
+  /** Receives a message each time the host overrides a model `trigger: true`. Defaults to `console.warn`. */
+  logOverride?: (message: string) => void
 }
 
 /** Thrown when the model call failed and the fallback did not find a phrase that ends the transcript. */
@@ -64,11 +66,19 @@ export class HealFailure extends Error {
 }
 
 /**
- * The two literal trigger forms, ignoring case, only when they end the transcript. `\b`
- * keeps "that is my prompted" from matching. After the phrase, at most one `[.!?]` and
+ * The two literal trigger forms of the fallback, ignoring case, only when they end the transcript.
+ * `\b` keeps "that is my prompted" from matching. After the phrase, at most one `[.!?]` and
  * trailing whitespace may follow; a second mark or any other word means no match.
  */
 const FINAL_LITERAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
+
+/**
+ * The three literal forms the host check uses on a model answer: the two above plus
+ * "thats my prompt". A variant such as "promt" matches none of them, so the host never
+ * vetoes or strips it: the model decides.
+ */
+const HOST_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b/iu
+const HOST_FINAL_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b[.!?]?\s*$/iu
 
 /**
  * Heal a raw transcript with exactly one model call and report the trigger decision.
@@ -82,6 +92,13 @@ const FINAL_LITERAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
  * only when a literal form ends the transcript: it returns `trigger: true` with that
  * phrase stripped. Any other transcript makes it throw.
  *
+ * When the model call answers `trigger: true`, the host checks the answer against the text
+ * (defence in depth; the model still decides every other case):
+ * - Veto: a literal form appears in the raw transcript but does not end it. The model has
+ *   contradicted the text, so the decision becomes `trigger: false` with the transcript unchanged.
+ * - Strip: a literal form still ends the returned prompt. It is removed, with its trailing punctuation.
+ * Each veto is reported through `logOverride`, so a model that keeps contradicting the text is visible.
+ *
  * @param rawTranscript - the accumulated raw transcript for the current capture.
  * @param options - optional endpoint, timeout and logger overrides.
  * @returns the decision, with `source` naming which path decided.
@@ -91,14 +108,37 @@ export async function healTranscript(rawTranscript: string, options: HealOptions
   const logRaw = options.logRawTranscript ?? logToConsole
   logRaw(rawTranscript)
   try {
-    const { trigger, prompt } = await callModel(rawTranscript, options.endpoint ?? HEAL_ENDPOINT, options.timeoutMs ?? HEAL_TIMEOUT_MS)
-    return { trigger, prompt, source: 'model' }
+    const model = await callModel(rawTranscript, options.endpoint ?? HEAL_ENDPOINT, options.timeoutMs ?? HEAL_TIMEOUT_MS)
+    return checkModelDecision(rawTranscript, model, options.logOverride ?? warnToConsole)
   } catch (error) {
     const reason = sanitizeText(error, 300)
     const prompt = promptBeforeFinalPhrase(rawTranscript)
     if (prompt === null) throw new HealFailure(`heal call failed (${reason}) and the transcript does not end with the trigger phrase`)
     return { trigger: true, prompt, source: 'fallback' }
   }
+}
+
+/**
+ * Check a model answer against the raw transcript. Only `trigger: true` is checked; a
+ * `false` answer passes unchanged. The veto fires only when a literal form appears and the
+ * transcript does not end with one. A variant such as "promt" never fires it.
+ */
+function checkModelDecision(
+  rawTranscript: string,
+  model: { trigger: boolean; prompt: string },
+  logOverride: (message: string) => void,
+): HealDecision {
+  if (!model.trigger) return { trigger: false, prompt: model.prompt, source: 'model' }
+  if (!HOST_FINAL_LITERAL_FORM.test(rawTranscript) && HOST_LITERAL_FORM.test(rawTranscript)) {
+    logOverride('dsh-talk heal: model answered trigger true, but the literal trigger phrase is not at the end of the transcript; overridden to trigger false')
+    return { trigger: false, prompt: rawTranscript, source: 'model' }
+  }
+  return { trigger: true, prompt: stripFinalPhrase(model.prompt), source: 'model' }
+}
+
+/** The prompt without a literal form that still ends it, and without the punctuation after it. */
+function stripFinalPhrase(prompt: string): string {
+  return prompt.replace(HOST_FINAL_LITERAL_FORM, '').trim()
 }
 
 /**
@@ -174,4 +214,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function logToConsole(rawTranscript: string): void {
   console.log('dsh-talk heal raw transcript:', rawTranscript)
+}
+
+function warnToConsole(message: string): void {
+  console.warn(message)
 }

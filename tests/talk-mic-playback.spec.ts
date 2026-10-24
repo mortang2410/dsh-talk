@@ -31,7 +31,7 @@ const SETTINGS: TalkStatus = {
     browser: { voiceName: null, rate: 1, pitch: 1 },
   },
   announce: { enabled: false, onTurnEnd: false, onApproval: false, onError: false },
-  record: { enabled: true, hotkey: null, maxSeconds: 60, autoSubmit: false, vad: { enabled: false, silenceMs: 1000, energyThreshold: 0.01 } },
+  record: { enabled: true, hotkey: null, maxSeconds: 60, ceilingSeconds: 600, autoSubmit: false, vad: { enabled: false, silenceMs: 1000, energyThreshold: 0.01 } },
   interrupt: false,
   patchFile: null,
 }

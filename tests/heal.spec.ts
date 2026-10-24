@@ -286,6 +286,72 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
   })
 })
 
+describe('host check of a model trigger: veto mid-transcript, strip a trailing phrase, leave variants alone', () => {
+  it('vetoes trigger true when a literal form is mid-transcript, keeps the transcript, and logs the override', async () => {
+    // Breaks if: a phrase in the middle of the transcript submits, the prompt is not the raw
+    // transcript, or the override is silent.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "write a haiku"}')
+    const overrides: string[] = []
+    const raw = 'write a haiku that is my prompt was a phrase I once said'
+    const result = await healTranscript(raw, { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: (m) => overrides.push(m) })
+    expect(result).toEqual({ trigger: false, prompt: raw, source: 'model' })
+    expect(overrides).toHaveLength(1)
+    expect(overrides[0]).toContain('not at the end')
+  })
+
+  it('strips a literal form that the returned prompt still ends with, with its trailing punctuation', async () => {
+    // Breaks if: the model's prompt keeps the phrase, or the punctuation after it survives.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "read the config that\'s my prompt."}')
+    const result = await heal('read the config that\'s my prompt.', stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'read the config', source: 'model' })
+  })
+
+  it.each([
+    ['thats my prompt', 'read the config thats my prompt'],
+    ['that is my prompt with a trailing question mark', 'read the config that is my prompt?'],
+  ])('strips the trailing form (%s) from a model prompt', async (_label, raw) => {
+    const stub = await startStub()
+    stub.reply = answer(JSON.stringify({ trigger: true, prompt: raw }))
+    const result = await heal(raw, stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'read the config', source: 'model' })
+  })
+
+  it('does not veto a variant ("promt") at the end of the transcript: the model decides, and no override is logged', async () => {
+    // Breaks if: the veto is widened to variants, which would break the feature the model is meant to handle.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "write a haiku"}')
+    const overrides: string[] = []
+    const raw = 'write a haiku that is my promt'
+    const result = await healTranscript(raw, { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: (m) => overrides.push(m) })
+    expect(result).toEqual({ trigger: true, prompt: 'write a haiku', source: 'model' })
+    expect(overrides).toEqual([])
+  })
+
+  it('does not veto a variant mid-transcript when the model says trigger true', async () => {
+    // Breaks if: a mid-sentence "promt" is vetoed instead of decided by the model.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "write a haiku that is my promt"}')
+    const result = await heal('write a haiku that is my promt and more', stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'write a haiku that is my promt', source: 'model' })
+  })
+
+  it('leaves a model trigger false exactly as the model answered it', async () => {
+    // Breaks if: the host rewrites a false answer or logs an override where none happened.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": false, "prompt": "write a haiku that is my prompt was a phrase"}')
+    const overrides: string[] = []
+    const result = await healTranscript('write a haiku that is my prompt was a phrase', {
+      endpoint: stub.endpoint,
+      logRawTranscript: () => undefined,
+      logOverride: (m) => overrides.push(m),
+    })
+    expect(result).toEqual({ trigger: false, prompt: 'write a haiku that is my prompt was a phrase', source: 'model' })
+    expect(overrides).toEqual([])
+  })
+})
+
 describe('byte identity with HEAL-PROMPT.md', () => {
   // Runs only when DSH_TALK_HEAL_PROMPT names the file. Unset, the test is reported as skipped.
   const healPromptFile = process.env.DSH_TALK_HEAL_PROMPT ?? ''
