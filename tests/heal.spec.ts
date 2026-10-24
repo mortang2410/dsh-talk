@@ -254,10 +254,12 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
     ['trailing exclamation and spaces', 'read the config that is my prompt!   ', 'read the config'],
     ['upper case', 'READ THE CONFIG THAT IS MY PROMPT', 'READ THE CONFIG'],
     ['every occurrence, matching the model path', 'that is my prompt and that is my prompt', 'and'],
+    ['the phrase alone, leaving an empty prompt the caller must not send', 'that is my prompt', ''],
   ])('the final literal form (%s) is stripped and what is left is sent', async (_label, raw, prompt) => {
     // Breaks if: the case-insensitive match, the sentence-mark removal, the trailing-whitespace
     // allowance, or the rule that every literal form is removed is lost. Removing every form
-    // rather than only the final one matches what the model path returns for the same text.
+    // rather than only the final one matches what the model path returns for the same text. The
+    // empty prompt is not an error: the client's own guard resets the capture instead of sending.
     const result = await heal(raw, await closedEndpoint())
     expect(result).toEqual({ trigger: true, prompt, source: 'fallback' })
   })
@@ -271,7 +273,6 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
     ['no phrase at all', 'read the config'],
     ['real words after the phrase', 'read the config that is my prompt now explain the vad'],
     ['a variant spelling', 'read the config that is my promt'],
-    ['the phrase alone, so there is nothing to send', 'that is my prompt'],
   ])('a fallback miss (%s) keeps the capture open by throwing HealFailure', async (_label, raw) => {
     // Breaks if: the fallback matches a substring such as "prompt" or "promt", accepts speech
     // after the phrase, or a miss returns a prompt instead of throwing. Trailing punctuation is
@@ -450,10 +451,11 @@ describe('fallback prompt text', () => {
     expect(result).toEqual({ trigger: true, prompt: 'read the config', source: 'fallback' })
   })
 
-  it('throws rather than sending an empty prompt when the phrase is the whole transcript', async () => {
-    // Breaks if: a transcript of just the phrase sends nothing at all and looks like a success.
+  it('returns an empty prompt, not an error, when the phrase is the whole transcript', async () => {
+    // Breaks if: a bare phrase is reported as a failure. The phrase fired; there is simply
+    // nothing before it, and the client's empty-prompt guard resets the capture quietly.
     const stub = await startStub()
     stub.reply = answer('boom')
-    await expect(heal('that is my prompt', stub.endpoint)).rejects.toBeInstanceOf(HealFailure)
+    expect(await heal('that is my prompt', stub.endpoint)).toEqual({ trigger: true, prompt: '', source: 'fallback' })
   })
 })

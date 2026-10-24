@@ -126,8 +126,9 @@ const HOST_ANY_PHRASE = /\bthat(?: is |'s |s )my prompt\b[.!?,;:]*/giu
  * error, timeout, non-JSON body, empty content, non-boolean `trigger`, non-string
  * `prompt`), the literal-phrase fallback runs on the raw transcript. The fallback decides
  * only when a literal form ends the transcript, ignoring trailing punctuation and filler words:
- * it returns `trigger: true` with every literal form stripped from what precedes it. A
- * transcript with nothing before the phrase, or with speech after it, makes it throw.
+ * it returns `trigger: true` with every literal form stripped from what precedes it, which is
+ * empty when the phrase was all that was said. A transcript with speech after the phrase makes
+ * it throw; an empty prompt does not, because the caller must not send one and does not.
  *
  * When the model call answers `trigger: true`, the host checks the answer against the text
  * (defence in depth; the model still decides every other case):
@@ -192,9 +193,10 @@ function promptBeforeFinalPhrase(rawTranscript: string): string | null {
   const index = finalPhraseIndex(rawTranscript, FALLBACK_FINAL_PHRASE)
   if (index === null) return null
   // A phrase the speaker also said earlier is still the phrase: it must not reach the prompt.
-  const prompt = stripPhrases(rawTranscript.slice(0, index))
-  // Nothing before the phrase means there is nothing to send, so this is a miss, not an empty send.
-  return prompt === '' ? null : prompt
+  // The phrase alone leaves an empty prompt. That is not a miss and not an error: the phrase
+  // fired and there is nothing before it to send, so the caller's empty-prompt guard resets the
+  // capture quietly (TalkMicButton.tsx, `if (prompt === '')`).
+  return stripPhrases(rawTranscript.slice(0, index))
 }
 
 /** One POST to the model endpoint. Throws `HealFailure` on any failure; never retries. */
