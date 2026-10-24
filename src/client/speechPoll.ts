@@ -115,8 +115,15 @@ export interface SpeechPollDeps {
   /**
    * Play decoded audio; resolves when playback ends, fails, pauses or aborts.
    * Calls onDuration with the length in seconds once the player knows it.
+   * The third registers a handler that runs when the chain's bound releases
+   * this playback, before the next task starts, so a player still running can
+   * be stopped rather than overlap the next reply.
    */
-  playAudio(entry: TalkAudio, onDuration: (seconds: number) => void): Promise<void>
+  playAudio(
+    entry: TalkAudio,
+    onDuration: (seconds: number) => void,
+    onRelease: (handler: () => void) => void,
+  ): Promise<void>
   /** True while the page is hidden. */
   isHidden(): boolean
   /** Subscribe to visibility changes; returns the unsubscribe function. */
@@ -286,7 +293,7 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
       if (entry === null || stopped) return
       // Audio that resolves after the chain released this task is dropped.
       if (ctx.released()) return
-      await deps.playAudio(entry, ctx.onDuration)
+      await deps.playAudio(entry, ctx.onDuration, ctx.onRelease)
     })
   }
 

@@ -64,6 +64,70 @@ export function initMic(): MicViewModel {
   return { phase: 'idle', elapsedSec: 0, lastText: '', error: undefined }
 }
 
+/** What the stop control knows at the moment of a press. */
+export interface StopInput {
+  /** True while a reply is audible (audio element or browser voice). */
+  playing: boolean
+  /** True while the session has a running turn. */
+  turnRunning: boolean
+  /** True after a press that stopped nothing new, so the next press is the second one. */
+  armed: boolean
+}
+
+/** What one stop press does. */
+export type StopAction = 'stop-playback' | 'cancel-turn' | 'arm' | 'none'
+
+/** The decision for one stop press, and the armed state to keep for the next press. */
+export interface StopPlan {
+  action: StopAction
+  armed: boolean
+}
+
+/**
+ * Decide one stop press. While audio is audible the press stops it and leaves
+ * the turn running. Otherwise, with a turn running, the first press only arms
+ * the control and the second press cancels the turn, so a stray click never
+ * destroys a reply on its own.
+ *
+ * @param input - the playback, turn and armed state at the press.
+ * @returns the action and the armed state for the next press.
+ */
+export function planStopPress(input: StopInput): StopPlan {
+  if (input.playing) return { action: 'stop-playback', armed: true }
+  if (input.turnRunning && input.armed) return { action: 'cancel-turn', armed: false }
+  if (input.turnRunning) return { action: 'arm', armed: true }
+  return { action: 'none', armed: false }
+}
+
+/**
+ * The stop control is shown only when it can do something: audio is audible or
+ * a turn is running.
+ *
+ * @param input - playback and turn state.
+ * @returns whether the control is visible.
+ */
+export function stopControlVisible(input: { playing: boolean; turnRunning: boolean }): boolean {
+  return input.playing || input.turnRunning
+}
+
+/** What speech detected during a capture does to playback and the turn. */
+export interface BargeInPlan {
+  stopPlayback: boolean
+  cancelTurn: boolean
+}
+
+/**
+ * Decide the effect of detected speech. Speech stops audible playback. It
+ * cancels the turn only when audio was audible and a turn is running; speech
+ * while nothing plays cancels nothing.
+ *
+ * @param input - playback and turn state at the detection.
+ * @returns which effects apply.
+ */
+export function planBargeIn(input: { playing: boolean; turnRunning: boolean }): BargeInPlan {
+  return { stopPlayback: input.playing, cancelTurn: input.playing && input.turnRunning }
+}
+
 /** Recording-cap seconds, clamped to a safe range for display. */
 export function clampRecordSeconds(value: number, fallback: number): number {
   if (!Number.isFinite(value) || value <= 0) return fallback

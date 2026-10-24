@@ -51,6 +51,28 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
+/** Structural face of one observable snapshot (the host's SnapshotStore shape). */
+interface SnapshotFace<T> {
+  getSnapshot(): T
+  subscribe(listener: () => void): () => void
+}
+
+/** The session binding fields the stop control reads: the running flag of the session. */
+interface SessionBindingFace {
+  session: SnapshotFace<{ running?: boolean }>
+}
+
+/** The session service faces the stop control reads, declared locally like the other faces here. */
+interface TurnSessionsFace {
+  scope?: (id: unknown) => unknown
+  binding?: (id: unknown) => unknown
+}
+
+/** The conversation assembly face that publishes a session's open turn. */
+interface UiConversationFace {
+  binding(source: SessionBindingFace): { openTurn: SnapshotFace<number | undefined> }
+}
+
 /** Dictionary namespace owned by this plugin. */
 export const NS = 'settings.talk'
 
@@ -111,13 +133,41 @@ export async function apply(ctx: Context): Promise<void> {
     // Master's sanctioned id → session-scope-ctx exchange (same pattern
     // ui-commands uses); resolves to undefined when either service is
     // unavailable (rc.8 builds without the scope exchange).
-    const sessions = scope.get('sessions') as { scope?: (id: unknown) => unknown } | undefined
+    const sessions = scope.get('sessions') as unknown as TurnSessionsFace | undefined
     const forSession: NonNullable<TalkMicInjected['forSession']> = (id) => {
       if (typeof id !== 'string') return undefined
       if (conversation === undefined || sessions?.scope === undefined) return undefined
       const actx = sessions.scope(id)
       if (actx === undefined || actx === null) return undefined
       return conversation.input.for(actx as Parameters<typeof conversation.input.for>[0])
+    }
+    // The stop control's turn signal. A session has a running turn when its session
+    // binding reports running and its conversation publishes an open turn: the same
+    // two reads the built-in Escape stop makes. Absent services mean no turn is ever
+    // reported running, so the turn stage stays off.
+    const uiConversation = scope.get('uiConversation') as unknown as UiConversationFace | undefined
+    const watchTurn: NonNullable<TalkMicInjected['watchTurn']> = (id, listener) => {
+      if (typeof id !== 'string' || uiConversation === undefined || sessions?.binding === undefined) return () => {}
+      try {
+        const binding = sessions.binding(id) as SessionBindingFace | undefined
+        if (binding === undefined) return () => {}
+        const openTurn = uiConversation.binding(binding).openTurn
+        const notify = (): void => listener(binding.session.getSnapshot().running === true && openTurn.getSnapshot() !== undefined)
+        const disposers = [binding.session.subscribe(notify), openTurn.subscribe(notify)]
+        notify()
+        return () => {
+          for (const dispose of disposers) dispose()
+        }
+      } catch {
+        return () => {}
+      }
+    }
+    // The built-in stop button's cancel: the session's scoped conversation service, which cancels the in-flight turn and keeps the queue.
+    const cancelTurn: NonNullable<TalkMicInjected['cancelTurn']> = async (id) => {
+      const scoped = sessions?.scope?.(id) as { get(name: string): unknown } | null | undefined
+      const scopedConversation = scoped?.get('conversation') as IConversation | undefined
+      if (scopedConversation === undefined) throw new Error('conversation service unavailable through the session scope')
+      await scopedConversation.cancel()
     }
     const setDraft: TalkMicInjected['setDraft'] = (text) => {
       conversation?.input.for(scope).setDraft(text)
@@ -134,7 +184,7 @@ export async function apply(ctx: Context): Promise<void> {
       name: 'conversation.input.left',
       id: 'talk-mic',
       order: 20,
-      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession }),
+      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn }),
     }, TalkMicButton))
 
     slots.inject('settings.plugins.tab', () => slots.register({

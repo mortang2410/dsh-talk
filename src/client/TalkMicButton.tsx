@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '../projection.ts'
-import { foldMic, initMic, type MicViewModel } from './present.ts'
+import { foldMic, initMic, planBargeIn, planStopPress, stopControlVisible, type MicViewModel } from './present.ts'
 import { advanceSilence, CAPTURE_SILENCE_TIMEOUT_MS, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import {
@@ -54,7 +54,21 @@ export interface TalkMicInjected {
    * either service is unavailable (rc.8 builds without the scope exchange).
    */
   forSession?: (id: unknown) => { setDraft(text: string): void; submit(): void } | undefined
+  /**
+   * Watch whether one session has a running turn. The listener gets true while
+   * the turn runs and false once it ends, and is called at once with the current
+   * value. Returns the unsubscribe. Absent when the host lacks the turn services.
+   */
+  watchTurn?: (sessionId: string, listener: (running: boolean) => void) => () => void
+  /**
+   * Cancel the running turn of one session through the scoped conversation
+   * service (the same call the built-in stop button makes). Preserves the queue.
+   */
+  cancelTurn?: (sessionId: string) => Promise<void>
 }
+
+/** How one playing reply is stopped. `begin` registers it; the returned function ends it. */
+export type PlaybackBegin = (stop: () => void) => () => void
 
 /** Full component props assembled by the input-slot renderer. */
 export type TalkMicProps = PropsRuntime<'conversation.input.left'> & InjectFace<TalkMicInjected>
@@ -253,6 +267,7 @@ function speakWithBrowserVoice(
   released: () => boolean,
   onRelease: (handler: () => void) => void,
   engine: BrowserEngineState,
+  begin: PlaybackBegin,
 ): Promise<void> {
   if (typeof speechSynthesis === 'undefined') {
     console.warn('[dsh-talk] speechSynthesis unavailable')
@@ -274,6 +289,8 @@ function speakWithBrowserVoice(
     const ceilingSeconds = ceilingMs / 1000
     onDuration(ceilingSeconds)
     let finished = false
+    // Ends this reply's entry in the playback registry; set just before speak().
+    let endPlayback: () => void = () => {}
     let started = false
     // This utterance's own state: true from its onstart, false after its onend or onerror,
     // undefined while the engine has not fired onstart for it. Only true allows a cancel.
@@ -289,6 +306,7 @@ function speakWithBrowserVoice(
     const finish = (): void => {
       if (finished) return
       finished = true
+      endPlayback()
       if (timer !== undefined) clearInterval(timer)
       if (startFallback !== undefined) clearTimeout(startFallback)
       if (absoluteCap !== undefined) clearTimeout(absoluteCap)
@@ -310,6 +328,11 @@ function speakWithBrowserVoice(
       // cancel a reply that started after this one.
       finish()
     })
+    // The stop control: cancel this reply's own audible speech (if known) and end the task.
+    const stopNow = (): void => {
+      cancelOwnSpeech()
+      finish()
+    }
     utterance.onstart = () => {
       started = true
       thisSpeaking = true
@@ -323,6 +346,7 @@ function speakWithBrowserVoice(
       thisSpeaking = false
       finish()
     }
+    endPlayback = begin(stopNow)
     speechSynthesis.speak(utterance)
     // The utterance may have ended synchronously; never start a poll after that.
     if (finished) return
@@ -373,7 +397,12 @@ function speakWithBrowserVoice(
  * @param entry - the audio served by `talk/audio`.
  * @param onDuration - receives the audio length in seconds once the player knows it.
  */
-function playAudioEntry(entry: TalkAudio, onDuration: (seconds: number) => void): Promise<void> {
+function playAudioEntry(
+  entry: TalkAudio,
+  onDuration: (seconds: number) => void,
+  onRelease: (handler: () => void) => void,
+  begin: PlaybackBegin,
+): Promise<void> {
   return new Promise<void>((resolve) => {
     const binary = atob(entry.data)
     const bytes = new Uint8Array(binary.length)
@@ -381,17 +410,32 @@ function playAudioEntry(entry: TalkAudio, onDuration: (seconds: number) => void)
     const url = URL.createObjectURL(new Blob([bytes], { type: entry.mime }))
     const player = new Audio(url)
     let finished = false
+    // Ends this reply's entry in the playback registry; set just before play().
+    let endPlayback: () => void = () => {}
     const finish = (): void => {
       if (finished) return
       finished = true
+      endPlayback()
       URL.revokeObjectURL(url)
       resolve()
     }
+    // Stop this reply now: pause the element and end the task. A later pause event finds it finished.
+    const stopNow = (): void => {
+      try {
+        player.pause()
+      } catch {
+        // A player that cannot pause is still ended below.
+      }
+      finish()
+    }
+    // The chain's bound released this playback: stop it so it cannot overlap the next reply.
+    onRelease(stopNow)
     player.addEventListener('ended', finish)
     player.addEventListener('error', finish)
     player.addEventListener('pause', finish)
     player.addEventListener('abort', finish)
     player.addEventListener('loadedmetadata', () => onDuration(player.duration))
+    endPlayback = begin(stopNow)
     void Promise.resolve(player.play()).catch(finish)
   })
 }
@@ -404,7 +448,7 @@ function playAudioEntry(entry: TalkAudio, onDuration: (seconds: number) => void)
  * @returns the button element.
  */
 export function TalkMicButton(props: TalkMicProps): ReactNode {
-  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession } = props
+  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn } = props
   const inputActions = (props as Partial<Record<'inputActions', RuntimeInputActions>>).inputActions
   const sessionIdProp = (props as Partial<Record<'sessionId', unknown>>).sessionId
   const writeDraft = (text: string): void => {
@@ -437,6 +481,16 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   const [mic, setMic] = useState<MicViewModel>(initMic)
   const [recording, setRecording] = useState(false)
   const [settings, setSettings] = useState<TalkStatus | undefined>(undefined)
+  // Stop control state. The refs are read by the detector and the press handler; the state drives the render.
+  const [playing, setPlaying] = useState(false)
+  const [turnRunning, setTurnRunning] = useState(false)
+  const playingRef = useRef(false)
+  const turnRunningRef = useRef(false)
+  /** True after a press that stopped nothing, so the next press with a running turn cancels it. */
+  const armedRef = useRef(false)
+  /** The reply currently audible, or null. Cleared on every path that ends playback. */
+  const playbackRef = useRef<{ stop: () => void } | null>(null)
+  const cancellingRef = useRef(false)
 
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -716,6 +770,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     analyser.getFloatTimeDomainData(buffer)
     const speech = isSpeechFrame(rmsOf(buffer), record.vad.energyThreshold)
     capture.idleMs = advanceSilence(capture.idleMs, TICK_MS, speech)
+    // Barge-in reuses this capture's detector: speech while audio is audible stops it.
+    if (speech && playingRef.current) bargeIn()
     if (speech) {
       capture.pauseMs = 0
       // A recorder that stopped by itself is not taking audio, so speech starts a new segment at once.
@@ -770,6 +826,60 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     else stopRecorder()
     teardownVad()
     setMic(foldMic(micRef.current, { kind: 'stopped' }))
+  }
+
+  // Register one audible reply. Its end clears the entry, but only while it is still the current one.
+  const beginPlayback: PlaybackBegin = (stop) => {
+    const handle = { stop }
+    playbackRef.current = handle
+    playingRef.current = true
+    armedRef.current = false
+    setPlaying(true)
+    return () => {
+      if (playbackRef.current !== handle) return
+      playbackRef.current = null
+      playingRef.current = false
+      setPlaying(false)
+    }
+  }
+
+  // Stop the audible reply, if any. The turn keeps running.
+  const stopPlayback = (): void => {
+    const handle = playbackRef.current
+    if (handle === null) return
+    playbackRef.current = null
+    playingRef.current = false
+    setPlaying(false)
+    handle.stop()
+  }
+
+  // Cancel this session's running turn through the scoped conversation service.
+  const cancelTurnNow = async (): Promise<void> => {
+    if (cancelTurn === undefined || typeof sessionIdProp !== 'string' || sessionIdProp === '') return
+    if (cancellingRef.current) return
+    cancellingRef.current = true
+    try {
+      await cancelTurn(sessionIdProp)
+    } catch (error) {
+      if (liveRef.current) setMic(foldMic(micRef.current, { kind: 'failed', message: `cancel failed: ${detailOf(error)}` }))
+    } finally {
+      cancellingRef.current = false
+    }
+  }
+
+  // Speech detected in an open capture: stop audible playback, and cancel the turn only when audio was audible.
+  const bargeIn = (): void => {
+    const plan = planBargeIn({ playing: playingRef.current, turnRunning: turnRunningRef.current })
+    if (plan.stopPlayback) stopPlayback()
+    if (plan.cancelTurn) void cancelTurnNow()
+  }
+
+  // The stop button. One press stops audible playback; with nothing audible, the first press arms and the second cancels.
+  const onStopPress = (): void => {
+    const plan = planStopPress({ playing: playingRef.current, turnRunning: turnRunningRef.current, armed: armedRef.current })
+    armedRef.current = plan.armed
+    if (plan.action === 'stop-playback') stopPlayback()
+    else if (plan.action === 'cancel-turn') void cancelTurnNow()
   }
 
   const start = async (): Promise<void> => {
@@ -985,6 +1095,23 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, recording])
 
+  // Turn state for the stop control: follow this session's running turn while it is mounted.
+  // Without the host's turn services the watch is absent, so no turn is ever reported running.
+  useEffect(() => {
+    if (typeof sessionIdProp !== 'string' || sessionIdProp === '' || watchTurn === undefined) return undefined
+    const unwatch = watchTurn(sessionIdProp, (running) => {
+      turnRunningRef.current = running
+      if (!running) armedRef.current = false
+      setTurnRunning(running)
+    })
+    return () => {
+      unwatch()
+      turnRunningRef.current = false
+      armedRef.current = false
+      setTurnRunning(false)
+    }
+  }, [sessionIdProp, watchTurn])
+
   // Playback: poll talk/latest for this session and play each new utterance
   // once (speechPoll.ts). The session id arrives as a slot prop; without it
   // there is no session to ask about, so no poll starts and the mic still works.
@@ -998,8 +1125,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       latest,
       audio,
       speakText: (text, onDuration, released, onRelease) =>
-        speakWithBrowserVoice(text, settingsRef.current?.tts.browser, onDuration, released, onRelease, browserEngine),
-      playAudio: playAudioEntry,
+        speakWithBrowserVoice(text, settingsRef.current?.tts.browser, onDuration, released, onRelease, browserEngine, beginPlayback),
+      playAudio: (entry, onDuration, onRelease) => playAudioEntry(entry, onDuration, onRelease, beginPlayback),
       isHidden: () => typeof document !== 'undefined' && document.hidden,
       onVisibilityChange: (listener) => {
         if (typeof document === 'undefined') return () => {}
@@ -1029,6 +1156,21 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       >
         {label}
       </button>
+      {stopControlVisible({ playing, turnRunning })
+        ? (
+          <button
+            type="button"
+            data-dsh-talk-stop
+            data-playing={playing ? 'true' : 'false'}
+            data-turn-running={turnRunning ? 'true' : 'false'}
+            aria-label="stop"
+            title="stop"
+            onClick={onStopPress}
+          >
+            ■
+          </button>
+        )
+        : null}
       {mic.phase === 'error' && mic.error !== undefined
         ? <span data-dsh-talk-mic-error role="alert">{mic.error}</span>
         : null}
