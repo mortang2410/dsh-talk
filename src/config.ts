@@ -321,7 +321,7 @@ export const Config: z<Config> = z.object({
   }),
   announce: z.object({
     enabled: z.boolean().default(true),
-    onTurnEnd: z.boolean().default(true),
+    onTurnEnd: z.boolean().default(false),
     onApproval: z.boolean().default(true),
     onError: z.boolean().default(true),
     messages: z.object({
@@ -459,7 +459,7 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
   }
 
   const announceEnabled = booleanOf(announce.enabled, DEFAULT_ANNOUNCE_ENABLED, 'announce.enabled')
-  const announceOnTurnEnd = booleanOf(announce.onTurnEnd, true, 'announce.onTurnEnd')
+  const announceOnTurnEnd = booleanOf(announce.onTurnEnd, false, 'announce.onTurnEnd')
   const announceOnApproval = booleanOf(announce.onApproval, true, 'announce.onApproval')
   const announceOnError = booleanOf(announce.onError, true, 'announce.onError')
   const messageTurnEnd = stringOf(messages.turnEnd, 'Turn complete.', 'announce.messages.turnEnd')

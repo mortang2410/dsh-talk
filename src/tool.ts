@@ -42,6 +42,51 @@ export function renderSpeak(args: { text: string }, value: {
   }]
 }
 
+/** A fenced code block opener or closer: a run of three backticks or tildes. */
+const FENCE_LINE = /^\s*(```|~~~)/u
+
+/** A markdown table row or separator: two or more pipes on one line. */
+function isTableLine(line: string): boolean {
+  return (line.match(/\|/gu) ?? []).length >= 2
+}
+
+/**
+ * Reduce a written answer to the text that may be spoken. This is the second
+ * guard behind the tool description: it does not rely on the model complying.
+ * Removes fenced code blocks (through the closing fence, or to the end when
+ * unclosed), indented code lines (four spaces or a tab), table rows, URLs,
+ * absolute, home-relative and dot-relative paths, and multi-segment relative
+ * file paths. Backticks are dropped so inline code words stay readable.
+ *
+ * @param raw - the text the model passed to the tool.
+ * @returns the speakable text; empty when nothing else remains.
+ */
+export function speakableText(raw: string): string {
+  const kept: string[] = []
+  let fence: string | null = null
+  for (const line of raw.split(/\r?\n/u)) {
+    const fenceMatch = FENCE_LINE.exec(line)
+    if (fence !== null) {
+      if (fenceMatch !== null && fenceMatch[1] === fence) fence = null
+      continue
+    }
+    if (fenceMatch !== null) {
+      fence = fenceMatch[1] ?? null
+      continue
+    }
+    if (/^( {4}|\t)/u.test(line) || isTableLine(line)) continue
+    kept.push(line)
+  }
+  return kept.join(' ')
+    .replace(/https?:\/\/\S+/giu, ' ')
+    .replace(/(?<=^|\s)(?:~|\.{1,2})?\/\S+/gu, ' ')
+    .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]{1,8}(?![\w/])/gu, ' ')
+    .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+){2,}(?![\w/])/gu, ' ')
+    .replace(/`/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+}
+
 /**
  * Assemble the `speak` tool definition. `execute` returns only the canonical
  * {@link SpeakOutcome} declared by the output schema; infrastructure failures
@@ -54,12 +99,12 @@ export function renderSpeak(args: { text: string }, value: {
 export function speakTool(service: TalkService, maxChars: number) {
   return defineTool({
     name: 'speak',
-    description: 'Speak text aloud to the user through the configured text-to-speech engine (browser voice, edge-tts, or piper). Use it for audible replies. The audio plays in the browser; the session log records what was spoken.',
+    description: 'Speak a short paraphrase of your answer aloud to the user. Write the paraphrase yourself, in at most four sentences, colloquial, with no code, no tables, no file paths and no URLs. Do not paste your written answer.',
     parameters: {
       text: {
         type: 'string',
         required: true as const,
-        description: 'The exact text to speak aloud.',
+        description: 'Your spoken paraphrase: at most four sentences, colloquial, no code, tables, file paths or URLs.',
       },
       engine: {
         type: 'string',
@@ -93,9 +138,15 @@ export function speakTool(service: TalkService, maxChars: number) {
     async execute(args, exec) {
       const text = args.text.trim()
       if (text === '') throw new Error('dsh-talk: speak text must not be empty')
-      if (text.length > maxChars) throw new Error(`dsh-talk: speak text exceeds the ${maxChars} character cap`)
+      if (text.length > maxChars) {
+        throw new Error(`dsh-talk: speak text is ${text.length} characters, over the ${maxChars} character cap; shorten the paraphrase and retry`)
+      }
+      const spoken = speakableText(text)
+      if (spoken === '') {
+        throw new Error('dsh-talk: nothing speakable is left after removing code, tables and paths; write a plain paraphrase and retry')
+      }
       const session = exec.agent?.session
-      return await service.speak(text, {
+      return await service.speak(spoken, {
         ...(args.engine === undefined ? {} : { engine: args.engine }),
         ...(args.voice === undefined ? {} : { voice: args.voice }),
         ...(args.interrupt === undefined ? {} : { interrupt: args.interrupt }),

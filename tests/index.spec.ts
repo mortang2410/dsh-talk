@@ -62,8 +62,8 @@ describe('apply — assembly', () => {
     expect(harness.service.speechLogOutcome(String(harness.session.id))?.skipped ?? 0).toBeGreaterThan(0)
   })
 
-  it('announces turn completion after a running → idle transition', async () => {
-    const harness = await mountHarness({ tts: { engine: 'browser' } })
+  it('announces turn completion after a running → idle transition when onTurnEnd is set', async () => {
+    const harness = await mountHarness({ tts: { engine: 'browser' }, announce: { onTurnEnd: true } })
     const agent = makeAgent(harness.session)
     harness.ctx.emit('agent/status', { agent, status: 'running' })
     harness.ctx.emit('agent/status', { agent, status: 'idle' })
@@ -72,6 +72,24 @@ describe('apply — assembly', () => {
     const speech = harness.session.snapshotEvents().filter(event => event.type === 'dsh-talk/speech')
     expect(speech).toHaveLength(0)
     expect(harness.service.speechLogOutcome(String(harness.session.id))?.skipped ?? 0).toBeGreaterThan(0)
+  })
+
+  it('does not announce turn completion under the shipped default', async () => {
+    const harness = await mountHarness({ tts: { engine: 'browser' } })
+    const agent = makeAgent(harness.session)
+    harness.ctx.emit('agent/status', { agent, status: 'running' })
+    harness.ctx.emit('agent/status', { agent, status: 'idle' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(harness.service.speechLogOutcome(String(harness.session.id))?.skipped ?? 0).toBe(0)
+  })
+
+  it('keeps the approval and error announcements firing under the shipped default', async () => {
+    const harness = await mountHarness({ tts: { engine: 'browser' } })
+    const agent = makeAgent(harness.session)
+    await harness.ctx.waterfall('approval/request', { agent } as never, () => Promise.resolve('rejected' as const))
+    harness.ctx.emit('agent/error', { agent, error: new Error('boom') } as never)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(harness.service.speechLogOutcome(String(harness.session.id))?.skipped ?? 0).toBeGreaterThanOrEqual(2)
   })
 
   it('stays silent for an idle observation without a prior running', async () => {

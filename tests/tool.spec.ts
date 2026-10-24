@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { mountHarness, withKnownSpeechVocabulary, type Harness } from './harness.ts'
+import { speakableText } from '../src/tool.ts'
 
 let callCounter = 0
 
@@ -124,5 +125,70 @@ describe('speak tool', () => {
     const harness = await mountHarness()
     const result = await callTool(harness, { text: 'hi', engine: 'rm-rf' })
     expect(result.isError).toBe(true)
+  })
+
+  it('lists the paraphrase rule in the composed description the model reads', async () => {
+    const harness = await mountHarness()
+    const listed = harness.ctx.tools.get('speak') as unknown as { description?: string } | undefined
+    const description = listed?.description ?? ''
+    expect(description).toContain('at most four sentences')
+    expect(description).toContain('colloquial')
+    expect(description).toContain('no code')
+    expect(description).toContain('no tables')
+    expect(description).toContain('no file paths')
+    expect(description).toContain('no URLs')
+  })
+
+  it('refuses an oversized text, names the size and the cap, and synthesizes nothing', async () => {
+    const harness = await mountHarness({ maxSpeakChars: 20 })
+    const result = await callTool(harness, { text: 'x'.repeat(30), engine: 'browser' })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result)).toContain('30 characters')
+    expect(JSON.stringify(result)).toContain('20 character cap')
+    expect(harness.service.speechLogOutcome(String(harness.session.id))?.skipped ?? 0).toBe(0)
+  })
+
+  it('refuses a text that is only a fenced code block and speaks nothing', async () => {
+    const harness = await mountHarness()
+    const result = await callTool(harness, { text: '```ts\nconst x = 1\n```', engine: 'browser' })
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result)).toContain('nothing speakable')
+    expect(harness.service.speechLogOutcome(String(harness.session.id))?.skipped ?? 0).toBe(0)
+  })
+
+  it('speaks the prose of a text that mixes a code block with a sentence', async () => {
+    const harness = await mountHarness()
+    const result = await callTool(harness, { text: 'Here is the fix.\n```ts\nconst x = 1\n```\nRun it after the reload.', engine: 'browser' })
+    expect(result.isError).toBe(false)
+    expect(speakableText('Here is the fix.\n```ts\nconst x = 1\n```\nRun it after the reload.')).toBe('Here is the fix. Run it after the reload.')
+  })
+})
+
+describe('speakableText', () => {
+  it('removes fenced code blocks, tilde fences and an unclosed fence to the end', () => {
+    expect(speakableText('Before.\n```\ncode\n```\nAfter.')).toBe('Before. After.')
+    expect(speakableText('Before.\n~~~py\nprint(1)\n~~~\nAfter.')).toBe('Before. After.')
+    expect(speakableText('Before.\n```\nnever closed')).toBe('Before.')
+  })
+
+  it('removes indented code lines and table rows', () => {
+    expect(speakableText('Look here.\n    const y = 2\nDone.')).toBe('Look here. Done.')
+    expect(speakableText('Values.\n| a | b |\n|---|---|\n| 1 | 2 |\nThat is all.')).toBe('Values. That is all.')
+  })
+
+  it('removes absolute, home-relative, dot-relative and multi-segment file paths and URLs', () => {
+    expect(speakableText('Open /home/wilder/.dsh/x.json now.')).toBe('Open now.')
+    expect(speakableText('Edit ~/notes/todo and ./run here.')).toBe('Edit and here.')
+    expect(speakableText('See src/tool.ts for it.')).toBe('See for it.')
+    expect(speakableText('Read https://example.com/a/b today.')).toBe('Read today.')
+  })
+
+  it('keeps ordinary prose, inline code words, and slashes between words', () => {
+    expect(speakableText('Use `pow2` and/or the 1/2 split.')).toBe('Use pow2 and/or the 1/2 split.')
+  })
+
+  it('returns an empty string when nothing speakable remains', () => {
+    expect(speakableText('```\nonly code\n```')).toBe('')
+    expect(speakableText('| a | b |\n|---|---|')).toBe('')
   })
 })

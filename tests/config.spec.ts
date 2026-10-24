@@ -24,6 +24,14 @@ describe('Config schema', () => {
     expect(normalized.announce.messages.turnEnd).toBe('Turn complete.')
   })
 
+  it('ships with the turn-end announcement off and the other announcements on', () => {
+    const normalized = Config({}) as { announce: { onTurnEnd: boolean; onApproval: boolean; onError: boolean } }
+    expect(normalized.announce.onTurnEnd).toBe(false)
+    expect(normalized.announce.onApproval).toBe(true)
+    expect(normalized.announce.onError).toBe(true)
+    expect(resolveConfig({}).announceOnTurnEnd).toBe(false)
+  })
+
   it('keeps nested defaults when only a leaf is overridden', () => {
     const normalized = Config({ record: { autoSubmit: true } }) as { record: { autoSubmit: boolean; enabled: boolean }; stt: { interim: boolean } }
     expect(normalized.record.autoSubmit).toBe(true)
