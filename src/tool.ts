@@ -203,7 +203,7 @@ export function speakTool(service: TalkService, maxChars: number) {
         throw new Error('dsh-talk: nothing speakable is left after removing code, tables and paths; write a plain paraphrase and retry')
       }
       const session = exec.agent?.session
-      return await service.speak(spoken, {
+      const outcome = await service.speak(spoken, {
         ...(args.engine === undefined ? {} : { engine: args.engine }),
         ...(args.voice === undefined ? {} : { voice: args.voice }),
         ...(args.interrupt === undefined ? {} : { interrupt: args.interrupt }),
@@ -211,6 +211,9 @@ export function speakTool(service: TalkService, maxChars: number) {
         ...(session === undefined ? {} : { session }),
         signal: exec.signal,
       })
+      // The reply was spoken by the model, so the host must not speak it again at turn end.
+      if (session !== undefined) service.voiceTurns.noteToolSpeech(String(session.id))
+      return outcome
     },
   })
 }

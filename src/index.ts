@@ -22,6 +22,8 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import { Config, resolveConfig } from './config.ts'
 import {
   applyTalkSpeechProjection,
@@ -32,6 +34,15 @@ import {
 } from './projection.ts'
 import { TalkService } from './service.ts'
 import { speakTool } from './tool.ts'
+import { lastReplyText, VOICE_TURN_INSTRUCTION, voiceReplyText } from './voice-turn.ts'
+
+// The voice-turn instruction is a user-role message with its own source kind, declared the way
+// other producers declare theirs (dsh-user-approval). Its form is a snapshot with one section.
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-talk-voice-turn': { kind: 'dsh-talk-voice-turn' } & ContextFormed
+  }
+}
 
 export const name = 'talk'
 
@@ -109,9 +120,32 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       return
     }
     if (!runningAgents.delete(agent)) return
+    // A turn the user spoke, which the model did not answer through the speak tool, is spoken here.
+    if (service.voiceTurns.finishTurn(String(agent.session.id))) {
+      const reply = voiceReplyText(lastReplyText(agent.session.ownEvents()))
+      service.speak(reply, { reason: 'voice-reply', session: agent.session }).catch((error: unknown) => {
+        console.warn('[dsh-talk] voice reply failed:', error)
+      })
+      return
+    }
     if (!resolved.announceEnabled || !resolved.announceOnTurnEnd) return
     void service.speak(resolved.messageTurnEnd, { reason: 'turn-end', session: agent.session })
   })
+
+  // Voice-turn instruction: the first step of a turn the user spoke tells the model to answer through
+  // the speak tool. Other steps and typed turns pass through unchanged.
+  ctx.on('agent/pre-step', async ({ agent, step, signal }, next) => {
+    const decision = await next()
+    if (decision.kind === 'reject' || signal.aborted || step !== 1) return decision
+    if (!service.voiceTurns.startTurn(String(agent.session.id))) return decision
+    return {
+      ...decision,
+      messages: [...decision.messages, createUserMessage({
+        content: [{ type: 'text', text: VOICE_TURN_INSTRUCTION }],
+        source: { kind: 'dsh-talk-voice-turn', form: 'snapshot', sections: [{ name: 'dsh-talk-voice-turn', text: VOICE_TURN_INSTRUCTION }] },
+      })],
+    }
+  }, { prepend: true })
 
   // Error announcement: emit-mode notification, fire-and-forget speech.
   ctx.on('agent/error', ({ agent }) => {

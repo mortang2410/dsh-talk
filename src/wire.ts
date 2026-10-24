@@ -236,6 +236,17 @@ export const TALK_INTERRUPT_RESULT_SCHEMA = z.object({
   stopped: z.boolean(),
 })
 
+/** Result of `talk/voiceTurn`: whether the session's next prompt was armed as a voice turn. */
+export interface TalkVoiceTurn {
+  /** Always true once the host has recorded the arm. */
+  armed: boolean
+}
+
+/** Strict wire schema for {@link TalkVoiceTurn}. */
+export const TALK_VOICE_TURN_SCHEMA = z.object({
+  armed: z.boolean(),
+})
+
 /**
  * Result of `talk/latest`: the newest utterance recorded for ONE session, plus
  * that session's speech-log counters. Keyed by session id on purpose — a
@@ -274,7 +285,7 @@ export const TALK_LATEST_SCHEMA = z.object({
   engine: z.union([z.literal('browser'), z.literal('edge-tts'), z.literal('piper')]),
   text: z.string(),
   audioBytes: z.number().int(),
-  reason: z.union([z.literal('speak-tool'), z.literal('turn-end'), z.literal('approval'), z.literal('error')]),
+  reason: z.union([z.literal('speak-tool'), z.literal('turn-end'), z.literal('approval'), z.literal('error'), z.literal('voice-reply')]),
   logged: z.boolean(),
   appended: z.number().int(),
   skipped: z.number().int(),
@@ -425,6 +436,26 @@ export const TALK_LATEST_DESCRIPTOR = Object.freeze({
 } as const) satisfies InvocationDescriptor
 
 /**
+ * The `talk/voiceTurn` invocation descriptor. The client calls it just before a
+ * microphone prompt is submitted, so the host marks that turn as spoken.
+ */
+export const TALK_VOICE_TURN_DESCRIPTOR = Object.freeze({
+  id: 'dsh-talk#talk/voiceTurn',
+  service: 'talk',
+  namespace: 'talk',
+  method: 'voiceTurn',
+  invocation: Object.freeze({ kind: 'direct' }),
+  parameters: Object.freeze([Object.freeze({
+    name: 'sessionId',
+    wire: 'sessionId',
+    source: 'json',
+    codec: strictWire('dsh-talk/types#TalkVoiceTurnSessionId', z.string()),
+  } satisfies InvocationDescriptor['parameters'][number])]),
+  result: strictWire('dsh-talk/types#TalkVoiceTurn', TALK_VOICE_TURN_SCHEMA),
+  sourceLocation: SOURCE,
+} as const) satisfies InvocationDescriptor
+
+/**
  * The canonical invocation list both Typert faces register — the host
  * manifest and the client contribution share these exact descriptor objects.
  */
@@ -436,4 +467,5 @@ export const TALK_INVOCATIONS = Object.freeze([
   TALK_APPLY_SETTINGS_DESCRIPTOR,
   TALK_INTERRUPT_DESCRIPTOR,
   TALK_LATEST_DESCRIPTOR,
+  TALK_VOICE_TURN_DESCRIPTOR,
 ])

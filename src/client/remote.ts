@@ -19,6 +19,7 @@ import type {
   TalkSettingsResult,
   TalkStatus,
   TalkTranscript,
+  TalkVoiceTurn,
 } from '../wire.ts'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -37,8 +38,11 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     interrupt: () => Promise<RemoteResult<TalkInterruptResult>>
     /** The newest utterance of ONE session (null when it never spoke); session-keyed, so multi-session surfaces never read another session's utterance. */
     latest: (sessionId: string, signal?: AbortSignal) => Promise<RemoteResult<TalkLatest | null>>
+    /** Arm the session's next prompt as a microphone turn, so the host tells the model it is spoken. */
+    voiceTurn: (sessionId: string) => Promise<RemoteResult<TalkVoiceTurn>>
   }
   interface TypertRemoteMap {
+    'talk/voiceTurn': (sessionId: string) => Promise<RemoteResult<TalkVoiceTurn>>
     'talk/status': () => Promise<RemoteResult<TalkStatus>>
     'talk/audio': (utteranceId: string) => Promise<RemoteResult<TalkAudio | null>>
     'talk/transcribe': (audioData: string) => Promise<RemoteResult<TalkTranscript>>

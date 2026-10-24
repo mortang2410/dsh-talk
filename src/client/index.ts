@@ -38,6 +38,7 @@ import type {
   TalkSettingsResult,
   TalkStatus,
   TalkTranscript,
+  TalkVoiceTurn,
 } from '../wire.ts'
 
 export type { TalkMicInjected, TalkMicProps } from './TalkMicButton.tsx'
@@ -138,6 +139,8 @@ export async function apply(ctx: Context): Promise<void> {
     // The poll's signal reaches the RPC request, so a timed-out read is cancelled.
     const latest: TalkMicInjected['latest'] = async (sessionId, signal?: AbortSignal) =>
       unwrap<TalkLatest | null>(await talk.latest(sessionId, signal), 'latest')
+    const voiceTurn: TalkMicInjected['voiceTurn'] = async (sessionId) =>
+      unwrap<TalkVoiceTurn>(await talk.voiceTurn(sessionId), 'voiceTurn')
     const conversation = scope.get('conversation') as IConversation | undefined
     // Master's sanctioned id → session-scope-ctx exchange (same pattern
     // ui-commands uses); resolves to undefined when either service is
@@ -216,7 +219,7 @@ export async function apply(ctx: Context): Promise<void> {
       name: 'conversation.input.left',
       id: 'talk-mic',
       order: 20,
-      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel: t('stop'), cancelLabel: t('cancelTurn') }),
+      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, voiceTurn, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel: t('stop'), cancelLabel: t('cancelTurn') }),
     }, TalkMicButton))
 
     slots.inject('settings.plugins.tab', () => slots.register({

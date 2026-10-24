@@ -30,7 +30,8 @@ import {
 } from './settings-patch.ts'
 import { appendSpeechEvent } from './speech.ts'
 import type { DshTalkSpeechEvent, SpeechReason, SpeechTtsEngine } from './speech.ts'
-import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkSettingsInput, TalkSettingsResult, TalkStatus, TalkTranscript } from './wire.ts'
+import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkSettingsInput, TalkSettingsResult, TalkStatus, TalkTranscript, TalkVoiceTurn } from './wire.ts'
+import { VoiceTurns } from './voice-turn.ts'
 
 /** Profile patch-layer filename the settings panel appends to. */
 const PROFILE_PATCH_FILENAME = 'cordis.patch.yml'
@@ -165,6 +166,8 @@ export class TalkService extends TypertRemoteService {
    * evicted past {@link SPEECH_LOG_OUTCOME_SESSIONS}.
    */
   private readonly speechLogOutcomes = new Map<string, SpeechSessionRecord>()
+  /** Which sessions' next turns came from the microphone, and whether they were spoken. */
+  readonly voiceTurns = new VoiceTurns()
 
   /**
    * @param ctx - context carrying the subprocess service.
@@ -473,6 +476,17 @@ export class TalkService extends TypertRemoteService {
   async heal(rawTranscript: string): Promise<TalkHeal> {
     const decision = await healTranscript(rawTranscript)
     return { trigger: decision.trigger, prompt: decision.prompt, source: decision.source }
+  }
+
+  /**
+   * Arm the session's next prompt as a voice turn. The client calls this just
+   * before it submits a microphone prompt; the turn's first step then tells the
+   * model the user is listening, and the host speaks the reply if the model does not.
+   * @param sessionId - the composer's session id.
+   */
+  voiceTurn(sessionId: string): TalkVoiceTurn {
+    this.voiceTurns.arm(sessionId)
+    return { armed: true }
   }
 
   /** Stop every in-flight local synthesis (the user started talking). */

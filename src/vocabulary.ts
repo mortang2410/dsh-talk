@@ -12,7 +12,7 @@
 import { z } from 'zod'
 
 /** What triggered one spoken utterance. */
-export type SpeechReason = 'speak-tool' | 'turn-end' | 'approval' | 'error'
+export type SpeechReason = 'speak-tool' | 'turn-end' | 'approval' | 'error' | 'voice-reply'
 
 /** Engines that can synthesize speech in this plugin. */
 export type SpeechTtsEngine = 'browser' | 'edge-tts' | 'piper'
@@ -76,7 +76,7 @@ export const talkSpeechProjectionSchema = z.object({
   engine: z.union([z.literal('browser'), z.literal('edge-tts'), z.literal('piper')]),
   text: z.string(),
   audioBytes: z.number().int(),
-  reason: z.union([z.literal('speak-tool'), z.literal('turn-end'), z.literal('approval'), z.literal('error')]),
+  reason: z.union([z.literal('speak-tool'), z.literal('turn-end'), z.literal('approval'), z.literal('error'), z.literal('voice-reply')]),
   error: z.string().optional(),
   interrupted: z.boolean().optional(),
   voice: z.string().optional(),

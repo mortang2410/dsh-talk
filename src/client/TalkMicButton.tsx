@@ -39,7 +39,7 @@ import {
   startSpeechPoll,
 } from './speechPoll.ts'
 import { recordingToWav16kMono } from './wav.ts'
-import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript } from '../wire.ts'
+import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript, TalkVoiceTurn } from '../wire.ts'
 
 /** Registration-side injected face: the recorder's host/browser bindings. */
 export interface TalkMicInjected {
@@ -55,6 +55,11 @@ export interface TalkMicInjected {
   audio: (utteranceId: string) => Promise<TalkAudio | null>
   /** Read the newest utterance of one session (playback poll). */
   latest: (sessionId: string, signal?: AbortSignal) => Promise<TalkLatest | null>
+  /**
+   * Arm the session's next prompt as a microphone turn on the host. Absent in
+   * builds without the voice-turn service; the prompt is then sent unarmed.
+   */
+  voiceTurn?: (sessionId: string) => Promise<TalkVoiceTurn>
   /** Write the transcription into the composer draft. */
   setDraft: (text: string) => void
   /** Send the transcription as a user message. */
@@ -475,7 +480,7 @@ function playAudioEntry(
  * @returns the button element.
  */
 export function TalkMicButton(props: TalkMicProps): ReactNode {
-  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel = '', cancelLabel = '' } = props
+  const { status, interrupt, transcribe, heal, audio, latest, voiceTurn, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel = '', cancelLabel = '' } = props
   const inputActions = (props as Partial<Record<'inputActions', RuntimeInputActions>>).inputActions
   const sessionIdProp = (props as Partial<Record<'sessionId', unknown>>).sessionId
   const writeDraft = (text: string): void => {
@@ -738,6 +743,15 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       return
     }
     setMic(foldMic(micRef.current, { kind: 'transcribed', text: prompt }))
+    // Arm the session before the prompt starts its turn, so the host knows this turn is spoken.
+    // The await is required: the arm must reach the host before the prompt does.
+    if (voiceTurn !== undefined && typeof sessionIdProp === 'string' && sessionIdProp !== '') {
+      try {
+        await voiceTurn(sessionIdProp)
+      } catch (error) {
+        console.warn('[dsh-talk] voice turn arm failed:', error)
+      }
+    }
     void submitText(prompt)
   }
 
