@@ -40,3 +40,9 @@ export function advanceSilence(previousSilenceMs: number, frameMs: number, speec
 export function silenceTrips(silenceMs: number, thresholdMs: number): boolean {
   return silenceMs >= thresholdMs
 }
+
+/**
+ * Silence, in milliseconds, after which a segmented capture ends without a trigger. It is
+ * measured from the last speech frame, only once the capture has at least one segment.
+ */
+export const CAPTURE_SILENCE_TIMEOUT_MS = 120_000

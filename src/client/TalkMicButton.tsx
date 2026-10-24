@@ -16,7 +16,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '../projection.ts'
 import { foldMic, initMic, type MicViewModel } from './present.ts'
-import { advanceSilence, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
+import { advanceSilence, CAPTURE_SILENCE_TIMEOUT_MS, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
+import { healTranscript } from '../heal.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import {
   CEILING_MS_PER_CHAR,
@@ -104,6 +105,39 @@ function bytesToBase64(bytes: Uint8Array): string {
 function detailOf(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error)
   return raw.replace(/\s+/gu, ' ').trim().slice(0, 200)
+}
+
+/** Detector tick, in milliseconds: the cadence of the voice-activity reads in a segmented capture. */
+const TICK_MS = 500
+
+/**
+ * One segmented capture, from the press until its final text is placed. The microphone
+ * stays open; each speech run becomes its own MediaRecorder segment, transcribed in order.
+ */
+interface SegmentedCapture {
+  stream: MediaStream
+  mime: string
+  /** The recorder of the segment being captured, or null between segments. */
+  recorder: MediaRecorder | null
+  /** Segments started so far; the 120-second timeout runs only once this is above zero. */
+  segments: number
+  /** The raw transcripts of every segment so far, joined with single spaces. */
+  accumulated: string
+  /** Silence, in milliseconds, inside the current segment (ends it at vad.silenceMs). */
+  pauseMs: number
+  /** Silence, in milliseconds, since the last speech frame (the 120-second timeout). */
+  idleMs: number
+  /** Recorder stops whose `onstop` has not fired yet. */
+  pendingStops: number
+  /** Set once the capture is ending (trigger, timeout or stop). */
+  closing: boolean
+  /** Set once the final step has been queued, so it runs once. */
+  finalized: boolean
+  /** Set when the heal call decided the trigger and the prompt was submitted. */
+  done: boolean
+  /** Serial chain: every segment and the final step run here, one after another. */
+  queue: Promise<void>
+  timer: ReturnType<typeof setInterval> | null
 }
 
 function supportedMime(): string | undefined {
@@ -396,7 +430,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   const startedRef = useRef<number>(0)
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
-  const silenceMsRef = useRef<number>(0)
+  const captureRef = useRef<SegmentedCapture | null>(null)
   const micRef = useRef(mic)
   micRef.current = mic
   const settingsRef = useRef(settings)
@@ -461,8 +495,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   }
 
   // Feature-detected voice-activity detection: attach an AnalyserNode to the
-  // live stream when the recorder path is used. Absent AudioContext degrades
-  // to no auto-end (the user stops manually).
+  // live stream when the recorder path is used. When it is present, the capture
+  // is segmented (startSegmentedCapture). Absent AudioContext means one recording
+  // that the user stops by hand.
   const setupVad = (stream: MediaStream, vad: TalkStatus['record']['vad']): void => {
     if (!vad.enabled) return
     const Ctor = (globalThis as unknown as { AudioContext?: typeof AudioContext }).AudioContext
@@ -475,15 +510,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       source.connect(analyser)
       audioContextRef.current = context
       analyserRef.current = analyser
-      silenceMsRef.current = 0
     } catch {
-      // VAD degrades to no auto-end.
+      // VAD degrades to one recording, stopped by hand.
     }
   }
 
   const teardownVad = (): void => {
     analyserRef.current = null
-    silenceMsRef.current = 0
     const context = audioContextRef.current
     audioContextRef.current = null
     if (context !== null) {
@@ -495,7 +528,188 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
   }
 
+  // Serial chain for one segmented capture: segments and the final step run in order.
+  const enqueue = (capture: SegmentedCapture, job: () => Promise<void>): void => {
+    capture.queue = capture.queue.then(job).catch(() => {})
+  }
+
+  // The final step: release the microphone and, unless the trigger already sent the
+  // prompt, put the accumulated transcript in the composer unsent.
+  const finalizeCapture = (capture: SegmentedCapture): void => {
+    capture.stream.getTracks().forEach(track => track.stop())
+    if (captureRef.current === capture) captureRef.current = null
+    if (capture.done) return
+    const text = capture.accumulated.trim()
+    if (text === '') {
+      setMic(foldMic(micRef.current, { kind: 'reset' }))
+      return
+    }
+    writeDraft(text)
+    setMic(foldMic(micRef.current, { kind: 'transcribed', text }))
+  }
+
+  // Queue the final step once the capture is ending and no recorder stop is still pending.
+  const maybeFinalize = (capture: SegmentedCapture): void => {
+    if (!capture.closing || capture.finalized || capture.pendingStops > 0) return
+    capture.finalized = true
+    enqueue(capture, async () => {
+      finalizeCapture(capture)
+    })
+  }
+
+  // One segment: convert, transcribe, log the raw text, then ask the heal call.
+  const processSegment = async (capture: SegmentedCapture, blob: Blob): Promise<void> => {
+    if (capture.done) return
+    let wav: Uint8Array
+    try {
+      wav = await recordingToWav16kMono(await blob.arrayBuffer())
+    } catch (error) {
+      setMic(foldMic(micRef.current, { kind: 'failed', message: `could not convert the recording to 16 kHz WAV: ${detailOf(error)}` }))
+      return
+    }
+    let raw: string
+    try {
+      raw = (await transcribe(bytesToBase64(wav))).text
+    } catch (error) {
+      setMic(foldMic(micRef.current, { kind: 'failed', message: `transcription failed: ${detailOf(error)}` }))
+      return
+    }
+    console.log('[dsh-talk] segment raw transcript:', raw)
+    const text = raw.trim()
+    if (text === '') return
+    capture.accumulated = capture.accumulated === '' ? text : `${capture.accumulated} ${text}`
+    capture.idleMs = 0
+    let decision: Awaited<ReturnType<typeof healTranscript>>
+    try {
+      decision = await healTranscript(capture.accumulated)
+    } catch (error) {
+      // The fallback already ran inside healTranscript and missed: keep the capture open.
+      setMic(foldMic(micRef.current, { kind: 'failed', message: `heal failed: ${detailOf(error)}` }))
+      return
+    }
+    if (!decision.trigger) return
+    capture.done = true
+    closeCapture(capture)
+    const prompt = decision.prompt.trim()
+    if (prompt === '') {
+      setMic(foldMic(micRef.current, { kind: 'reset' }))
+      return
+    }
+    setMic(foldMic(micRef.current, { kind: 'transcribed', text: prompt }))
+    void submitText(prompt)
+  }
+
+  const startSegment = (capture: SegmentedCapture): void => {
+    let recorder: MediaRecorder
+    try {
+      recorder = new MediaRecorder(capture.stream, { mimeType: capture.mime })
+    } catch {
+      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone capture failed' }))
+      return
+    }
+    // The chunks belong to this recorder only, so a late onstop never reads the next segment.
+    const chunks: Blob[] = []
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data)
+    }
+    recorder.onstop = () => {
+      capture.pendingStops -= 1
+      const blob = new Blob(chunks, { type: capture.mime })
+      enqueue(capture, () => processSegment(capture, blob))
+      maybeFinalize(capture)
+    }
+    try {
+      recorder.start()
+    } catch {
+      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone capture failed' }))
+      return
+    }
+    capture.recorder = recorder
+    capture.segments += 1
+    capture.pauseMs = 0
+  }
+
+  // Ends the current segment, if any. Its onstop queues the transcription.
+  const stopCurrentSegment = (capture: SegmentedCapture): void => {
+    const recorder = capture.recorder
+    capture.recorder = null
+    capture.pauseMs = 0
+    if (recorder === null || recorder.state === 'inactive') return
+    capture.pendingStops += 1
+    try {
+      recorder.stop()
+    } catch {
+      capture.pendingStops -= 1
+    }
+  }
+
+  // Ends the capture: no more detection, the current segment is flushed, then the final step runs.
+  const closeCapture = (capture: SegmentedCapture): void => {
+    if (capture.closing) return
+    capture.closing = true
+    if (capture.timer !== null) {
+      clearInterval(capture.timer)
+      capture.timer = null
+    }
+    setRecording(false)
+    teardownVad()
+    setMic(foldMic(micRef.current, { kind: 'stopped' }))
+    stopCurrentSegment(capture)
+    maybeFinalize(capture)
+  }
+
+  // One detector tick. Speech opens a segment; a pause of vad.silenceMs ends it. The
+  // 120-second timeout counts silence since the last speech, and only after a segment exists.
+  const segmentTick = (capture: SegmentedCapture, vad: TalkStatus['record']['vad']): void => {
+    const analyser = analyserRef.current
+    if (analyser === null || capture.closing) return
+    const buffer = new Float32Array(analyser.fftSize)
+    analyser.getFloatTimeDomainData(buffer)
+    const speech = isSpeechFrame(rmsOf(buffer), vad.energyThreshold)
+    capture.idleMs = advanceSilence(capture.idleMs, TICK_MS, speech)
+    if (speech) {
+      capture.pauseMs = 0
+      if (capture.recorder === null) startSegment(capture)
+    } else if (capture.recorder !== null) {
+      capture.pauseMs = advanceSilence(capture.pauseMs, TICK_MS, false)
+      if (silenceTrips(capture.pauseMs, vad.silenceMs)) stopCurrentSegment(capture)
+    }
+    if (capture.segments > 0 && silenceTrips(capture.idleMs, CAPTURE_SILENCE_TIMEOUT_MS)) closeCapture(capture)
+  }
+
+  const startSegmentedCapture = (stream: MediaStream, mime: string, record: TalkStatus['record']): void => {
+    const capture: SegmentedCapture = {
+      stream,
+      mime,
+      recorder: null,
+      segments: 0,
+      accumulated: '',
+      pauseMs: 0,
+      idleMs: 0,
+      pendingStops: 0,
+      closing: false,
+      finalized: false,
+      done: false,
+      queue: Promise.resolve(),
+      timer: null,
+    }
+    captureRef.current = capture
+    startedRef.current = Date.now()
+    setMic(foldMic(micRef.current, { kind: 'press', maxSeconds: record.maxSeconds }))
+    setRecording(true)
+    capture.timer = setInterval(() => {
+      const elapsed = Math.ceil((Date.now() - startedRef.current) / 1000)
+      setMic(foldMic(micRef.current, { kind: 'tick', elapsedSec: elapsed, maxSeconds: record.maxSeconds }))
+      segmentTick(capture, record.vad)
+    }, TICK_MS)
+  }
+
   const stop = (): void => {
+    const capture = captureRef.current
+    if (capture !== null) {
+      closeCapture(capture)
+      return
+    }
     setRecording(false)
     if (timerRef.current !== null) {
       clearInterval(timerRef.current)
@@ -608,6 +822,10 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       return
     }
     setupVad(stream, snapshot.record.vad)
+    if (analyserRef.current !== null) {
+      startSegmentedCapture(stream, mime, snapshot.record)
+      return
+    }
     let recorder: MediaRecorder
     try {
       recorder = new MediaRecorder(stream, { mimeType: mime })
@@ -640,17 +858,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     timerRef.current = setInterval(() => {
       const elapsed = Math.ceil((Date.now() - startedRef.current) / 1000)
       setMic(foldMic(micRef.current, { kind: 'tick', elapsedSec: elapsed, maxSeconds: settingsRef.current?.record.maxSeconds ?? 60 }))
-      const analyser = analyserRef.current
-      const vad = settingsRef.current?.record.vad
-      if (analyser !== null && vad?.enabled === true) {
-        const buffer = new Float32Array(analyser.fftSize)
-        analyser.getFloatTimeDomainData(buffer)
-        silenceMsRef.current = advanceSilence(silenceMsRef.current, 500, isSpeechFrame(rmsOf(buffer), vad.energyThreshold))
-        if (silenceTrips(silenceMsRef.current, vad.silenceMs)) {
-          stop()
-          return
-        }
-      }
       if (elapsed >= (settingsRef.current?.record.maxSeconds ?? 60)) stop()
     }, 500)
   }
