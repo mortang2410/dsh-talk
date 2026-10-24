@@ -173,7 +173,17 @@ function checkModelDecision(
     logOverride('dsh-talk heal: model answered trigger true, but the literal trigger phrase is not at the end of the transcript; overridden to trigger false')
     return { trigger: false, prompt: rawTranscript, source: 'model' }
   }
-  return { trigger: true, prompt: stripPhrases(model.prompt), source: 'model' }
+  const prompt = stripPhrases(model.prompt)
+  if (prompt !== '') return { trigger: true, prompt, source: 'model' }
+  // The model fired the trigger but returned nothing to send. If the speaker said something
+  // before the phrase, that speech must not be dropped: use the text before the phrase, which
+  // is what the fallback would have produced.
+  const before = promptBeforeFinalPhrase(rawTranscript)
+  if (before !== null && before !== '') {
+    logOverride('dsh-talk heal: model answered trigger true with an empty prompt; using the text before the trigger phrase')
+    return { trigger: true, prompt: before, source: 'model' }
+  }
+  return { trigger: true, prompt: '', source: 'model' }
 }
 
 /**

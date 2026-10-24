@@ -459,3 +459,23 @@ describe('fallback prompt text', () => {
     expect(await heal('that is my prompt', stub.endpoint)).toEqual({ trigger: true, prompt: '', source: 'fallback' })
   })
 })
+
+describe('a model trigger with nothing to send', () => {
+  it('uses the text before the phrase when the model returns an empty prompt', async () => {
+    // Breaks if: an empty model prompt drops the speech the speaker actually said.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": ""}')
+    const overrides: string[] = []
+    const result = await healTranscript('write a haiku that is my prompt', { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: (m) => overrides.push(m) })
+    expect(result).toEqual({ trigger: true, prompt: 'write a haiku', source: 'model' })
+    expect(overrides).toHaveLength(1)
+  })
+
+  it('keeps the empty prompt when the phrase was all that was said', async () => {
+    // Breaks if: a bare phrase invents text that was never spoken.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": ""}')
+    const result = await healTranscript('that is my prompt', { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: () => undefined })
+    expect(result).toEqual({ trigger: true, prompt: '', source: 'model' })
+  })
+})
