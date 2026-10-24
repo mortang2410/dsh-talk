@@ -125,17 +125,38 @@ interface BrowserEngineState {
 }
 
 /**
+ * Read `speechSynthesis.speaking`.
+ *
+ * @returns the flag, or null when the engine cannot be read.
+ */
+function readSpeaking(): boolean | null {
+  try {
+    return speechSynthesis.speaking === true
+  } catch {
+    return null
+  }
+}
+
+/**
  * Speak text with the browser voice. Settings come from the `talk/status`
  * snapshot (`tts.browser`): `talk/latest` carries no per-call voice, rate or
  * pitch, so a speak-tool `voice` override is not applied on this path.
  *
  * The reply ends on the first of four signals: the utterance's `end` or
  * `error`, the absolute cap (PLAYBACK_ABSOLUTE_MAX_MS), or
- * `speechSynthesis.speaking` going false once the utterance has started. The
- * flag is page-wide, so it counts only after this utterance's `onstart`, or
- * after ENGINE_START_FALLBACK_MS from `speak()` when the engine never fires
- * `onstart` and the flag has been seen true. The poll stops once `released`
- * reports that the chain has moved on.
+ * `speechSynthesis.speaking` going false. The flag is page-wide, so it counts
+ * only after this utterance's `onstart`. For an engine that never fires
+ * `onstart`, it counts once ENGINE_START_FALLBACK_MS has passed since `speak()`
+ * and the flag has been seen true, and then only on two consecutive false
+ * reads, SPEAKING_POLL_MS apart. The poll stops once `released` reports that
+ * the chain has moved on.
+ *
+ * When the cap fires and the flag still reads true, the reply is audible and the
+ * chain would start the next reply over it, so the cap calls
+ * `speechSynthesis.cancel()` before it finishes. `cancel()` clears the page's
+ * whole speech queue: on a page with more than one mounted talk button, it also
+ * stops any other utterance that is queued or speaking. When the flag reads
+ * false, the cap does not cancel.
  *
  * Before speaking, `onDuration` receives an inactivity ceiling in seconds:
  * `min(PLAYBACK_CEILING_MAX_MS, max(PLAYBACK_CAP_MS, text.length *
@@ -180,6 +201,8 @@ function speakWithBrowserVoice(
     let started = false
     let fallbackDue = false
     let seenSpeaking = false
+    // Consecutive false reads counted on the never-onstart fallback; a true read resets it.
+    let falseReads = 0
     let timer: ReturnType<typeof setInterval> | undefined
     let startFallback: ReturnType<typeof setTimeout> | undefined
     let absoluteCap: ReturnType<typeof setTimeout> | undefined
@@ -204,28 +227,42 @@ function speakWithBrowserVoice(
     startFallback = setTimeout(() => {
       fallbackDue = true
     }, ENGINE_START_FALLBACK_MS)
-    absoluteCap = setTimeout(finish, PLAYBACK_ABSOLUTE_MAX_MS)
+    absoluteCap = setTimeout(() => {
+      // The chain releases this reply now. If the flag still reads true, the speech is audible: cancel it first.
+      if (readSpeaking() === true) {
+        try {
+          speechSynthesis.cancel()
+        } catch {
+          // The engine refused the cancel; the reply still releases.
+        }
+      }
+      finish()
+    }, PLAYBACK_ABSOLUTE_MAX_MS)
     timer = setInterval(() => {
       // The chain has moved on (its bound elapsed): stop reading the flag.
       if (released()) {
         finish()
         return
       }
-      let speaking: boolean
-      try {
-        speaking = speechSynthesis.speaking === true
-      } catch {
-        // An unreadable flag is not a finished reply: wait for the next read, the ceiling or the cap.
-        return
-      }
+      const speaking = readSpeaking()
+      // An unreadable flag is not a finished reply: wait for the next read, the ceiling or the cap.
+      if (speaking === null) return
       if (speaking) {
         seenSpeaking = true
+        falseReads = 0
         // Re-arm the chain's bound: the ceiling is an inactivity timeout, not a deadline.
         onDuration(ceilingSeconds)
         return
       }
-      // The fallback applies only to an engine that has never fired `onstart`.
-      if (started || (seenSpeaking && fallbackDue && !engine.firesStart)) finish()
+      if (started) {
+        finish()
+        return
+      }
+      // The fallback applies only to an engine that has never fired `onstart`, and needs two false reads in a row.
+      if (seenSpeaking && fallbackDue && !engine.firesStart) {
+        falseReads += 1
+        if (falseReads >= 2) finish()
+      }
     }, SPEAKING_POLL_MS)
   })
 }

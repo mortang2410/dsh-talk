@@ -45,6 +45,8 @@ interface Remote {
 
 /** Audio elements the button constructed (one per played utterance). */
 const constructedAudio: string[] = []
+/** The browser speech flag as each audio element was constructed; true means speech was still audible. */
+const speakingAtAudioStart: boolean[] = []
 
 /**
  * What each successive player does: fire ended, fire pause, fire abort, or fire
@@ -63,6 +65,7 @@ class FakeAudio {
   duration = Number.NaN
   constructor(src: string) {
     constructedAudio.push(src)
+    speakingAtAudioStart.push(speech.speaking)
     this.script = playerScripts.shift() ?? 'end'
   }
   addEventListener(type: string, handler: () => void): void {
@@ -182,17 +185,23 @@ interface FakeSpeech {
   spoken: FakeUtterance[]
   /** How many times the button read `speechSynthesis.speaking`. */
   reads: number
+  /** How many times the button called `speechSynthesis.cancel()`. A cancel clears the flag, as the engine does. */
+  cancels: number
 }
-let speech: FakeSpeech = { speaking: false, speaksOnSpeak: false, spoken: [], reads: 0 }
+let speech: FakeSpeech = { speaking: false, speaksOnSpeak: false, spoken: [], reads: 0, cancels: 0 }
 
 function stubSpeech(speaksOnSpeak: boolean): void {
-  speech = { speaking: false, speaksOnSpeak, spoken: [], reads: 0 }
+  speech = { speaking: false, speaksOnSpeak, spoken: [], reads: 0, cancels: 0 }
   vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
   vi.stubGlobal('speechSynthesis', {
     getVoices: () => [],
     speak: (utterance: FakeUtterance) => {
       speech.spoken.push(utterance)
       if (speech.speaksOnSpeak) speech.speaking = true
+    },
+    cancel: () => {
+      speech.cancels += 1
+      speech.speaking = false
     },
     get speaking(): boolean {
       speech.reads += 1
@@ -215,6 +224,7 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     vi.stubGlobal('Audio', FakeAudio)
     Object.assign(URL, { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} })
     constructedAudio.length = 0
+    speakingAtAudioStart.length = 0
     playerScripts.length = 0
     clock = 0
     stubSpeech(false)
@@ -569,8 +579,8 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
   })
 
   it('a gap in the flag between two queued replies does not release the second (R4-3; assumes the engine reports the flag false between utterances, not measured)', async () => {
-    // Overlap first: b0's flag stays true, so the 900.7 s absolute cap releases b0 while it still
-    // speaks, and b1 is spoken then. The engine fires onstart for b0, so the start fallback is off.
+    // b0 fires onstart and ends through its own end signal, so no cap is involved. That sets the
+    // engine's start latch, and b1 is spoken as soon as b0 ends.
     stubSpeech(false)
     remote.latestValue = null
     mount()
@@ -583,19 +593,21 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     remote.latestValue = browserReply('b1', 200)
     await advanceTo(SPEECH_POLL_MS * 2)
     remote.latestValue = utterance('n1')
-    await advanceTo(901_000)
+    await advanceTo(2_000)
+    speech.speaking = false
+    speech.spoken[0]?.onend?.()
+    await advanceTo(2_100)
     expect(speech.spoken).toHaveLength(2)
     expect(constructedAudio).toHaveLength(0)
-    // The gap: the flag reads false for a while before b1 starts.
-    speech.speaking = false
-    await advanceTo(905_000)
+    // The gap: the flag reads false before b1 starts. b1 has not started, so it is not released.
+    await advanceTo(2_500)
     expect(constructedAudio).toHaveLength(0)
     // b1 starts, its flag goes false after its own start, and only then is it released.
     speech.speaking = true
     speech.spoken[1]?.onstart?.()
-    await advanceTo(906_000)
+    await advanceTo(3_000)
     speech.speaking = false
-    await advanceTo(908_000)
+    await advanceTo(3_500)
     expect(constructedAudio).toHaveLength(1)
   })
 
@@ -639,7 +651,9 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     expect(constructedAudio).toHaveLength(1)
   })
 
-  it('onstart ties the flag to this reply: once the reply has started, a false flag releases it at once', async () => {
+  it('onstart ties the flag to this reply: a false flag before its onstart does not release it, and after onstart one false read does', async () => {
+    // The flag reads true, then false, before the engine fires onstart for this reply. Before onstart,
+    // the false read must not release it (a fallback false read cannot count yet: it is due at 2.7 s).
     stubSpeech(false)
     remote.latestValue = null
     mount()
@@ -648,15 +662,20 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     await advanceTo(SPEECH_POLL_MS)
     expect(speech.spoken).toHaveLength(1)
     speech.speaking = true
-    speech.spoken[0]?.onstart?.()
     remote.latestValue = utterance('n1')
     await advanceTo(1_000)
     speech.speaking = false
     await advanceTo(1_500)
+    expect(constructedAudio).toHaveLength(0)
+    speech.speaking = true
+    speech.spoken[0]?.onstart?.()
+    await advanceTo(2_000)
+    speech.speaking = false
+    await advanceTo(2_500)
     expect(constructedAudio).toHaveLength(1)
   })
 
-  it('an engine that never fires onstart: the flag seen true, then false after the 2 s fallback, releases the reply', async () => {
+  it('an engine that never fires onstart: the flag seen true, then false on two reads after the 2 s fallback, releases the reply', async () => {
     stubSpeech(false)
     remote.latestValue = null
     mount()
@@ -668,10 +687,99 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     remote.latestValue = utterance('n1')
     await advanceTo(1_000)
     speech.speaking = false
-    // The fallback is 2 s after speak (0.7 s), so 2.7 s; the reply is not released before it.
+    // The fallback is 2 s after speak (0.7 s), so it is due at 2.7 s. The speaking reads at 2.7 s and
+    // 2.95 s are the two consecutive false reads, 250 ms apart, so the reply is released at 2.95 s.
     await advanceTo(2_500)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(2_900)
     expect(constructedAudio).toHaveLength(0)
     await advanceTo(3_200)
     expect(constructedAudio).toHaveLength(1)
+  })
+
+  it('an engine that never fires onstart: one false read after the fallback does not release the reply', async () => {
+    // Speaking polls run at 0.95 s, 1.2 s, ... 2.95 s, 3.2 s. The 2 s fallback is due at 2.7 s,
+    // so the read at 2.95 s is the first false read that counts. The flag reads true again at 3.2 s.
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    speech.speaking = true
+    remote.latestValue = utterance('n1')
+    await advanceTo(2_900)
+    speech.speaking = false
+    await advanceTo(2_960)
+    speech.speaking = true
+    await advanceTo(3_500)
+    expect(constructedAudio).toHaveLength(0)
+  })
+
+  it('the cap cancels a reply that is still speaking: cancel is called once, and the next reply starts only after it, not over it', async () => {
+    // The flag stays true, so the 900 s cap (armed at the 0.7 s speak) releases b1 while it is still audible.
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(900_000)
+    expect(constructedAudio).toHaveLength(0)
+    expect(speech.cancels).toBe(0)
+    await advanceTo(901_000)
+    expect(speech.cancels).toBe(1)
+    expect(constructedAudio).toHaveLength(1)
+    // The clip began after the cancel cleared the flag, so no audio played over the speech.
+    expect(speakingAtAudioStart).toEqual([false])
+    await advanceTo(1_000_000)
+    expect(speech.cancels).toBe(1)
+  })
+
+  it('the cap does not cancel when the flag already reads false: the reply is released without cancel', async () => {
+    // b0 fires onstart and ends, which sets the engine's start latch. b1 never fires onstart. Its flag
+    // reads true until 800 s, then false. Its bound is re-armed by the last true read to about 925 s,
+    // so the cap at about 901.4 s releases b1 while the flag reads false.
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b0', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    speech.speaking = true
+    speech.spoken[0]?.onstart?.()
+    speech.speaking = false
+    speech.spoken[0]?.onend?.()
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS * 2)
+    expect(speech.spoken).toHaveLength(2)
+    speech.speaking = true
+    remote.latestValue = utterance('n1')
+    await advanceTo(800_000)
+    expect(constructedAudio).toHaveLength(0)
+    speech.speaking = false
+    await advanceTo(900_000)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(902_000)
+    expect(constructedAudio).toHaveLength(1)
+    expect(speech.cancels).toBe(0)
+  })
+
+  it('after the chain releases a browser reply, the speaking poll and its timers are all cleared (R5-5: finish must clear the interval)', async () => {
+    // Only this probe catches an interval that finish leaves running: the released branch returns before it reads the flag.
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    const baseline = vi.getTimerCount()
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    await advanceTo(126_000)
+    expect(vi.getTimerCount()).toBe(baseline)
   })
 })

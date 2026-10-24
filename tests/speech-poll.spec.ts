@@ -52,6 +52,8 @@ function stubRemote() {
   // Every audio entry handed to the player (the controller never hands it null).
   const played: string[] = []
   const spoken: string[] = []
+  // The released check each browser reply received as its third argument.
+  const releaseChecks: Array<() => boolean> = []
   let hidden = false
   const listeners = new Set<() => void>()
   const deps: SpeechPollDeps = {
@@ -67,8 +69,9 @@ function stubRemote() {
       audioRequests.push(utteranceId)
       return evicted.has(utteranceId) ? null : audioFor(utteranceId)
     },
-    speakText: async (text, _onDuration, _released) => {
+    speakText: async (text, _onDuration, released) => {
       spoken.push(text)
+      releaseChecks.push(released)
     },
     playAudio: async (entry) => {
       played.push(entry.utteranceId)
@@ -89,6 +92,7 @@ function stubRemote() {
     audioRequests,
     played,
     spoken,
+    releaseChecks,
     listenerCount: () => listeners.size,
     setHidden(value: boolean) {
       hidden = value
@@ -540,6 +544,37 @@ describe('startSpeechPoll (talk/latest poll)', () => {
     expect(signals[0]?.aborted).toBe(false)
     await vi.advanceTimersByTimeAsync(1)
     expect(signals[0]?.aborted).toBe(true)
+    stop()
+  })
+
+  it('the released check reaches speakText: a browser reply whose speech never ends returns once the chain releases it, and the next reply then plays', async () => {
+    const remote = stubRemote()
+    const received: boolean[] = []
+    let loopEnded = false
+    // This stub holds the reply until the check it receives reads true, as the speaking poll does.
+    // It gives no end signal. A missing check returns at once, so the early play below fails the test;
+    // a check that never reads true keeps the loop running, so loopEnded stays false.
+    remote.deps.speakText = async (_text, _onDuration, released) => {
+      received.push(typeof released === 'function')
+      while (typeof released === 'function' && !released()) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250))
+      }
+      loopEnded = true
+    }
+    remote.state.latest = null
+    const stop = startSpeechPoll(SESSION, remote.deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.state.latest = utterance('b1', 'browser', 'a'.repeat(20))
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
+    remote.state.latest = utterance('n1')
+    // A reply with no reported duration is bounded by PLAYBACK_CAP_MS from its start at 0.7 s: released at 120.7 s.
+    await vi.advanceTimersByTimeAsync(PLAYBACK_CAP_MS - 1_000)
+    expect(remote.played).toEqual([])
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(remote.played).toEqual(['n1'])
+    expect(received).toEqual([true])
+    // The stub stopped working once the chain released it: the check reached it and read true.
+    expect(loopEnded).toBe(true)
     stop()
   })
 })

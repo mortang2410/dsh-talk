@@ -56,8 +56,9 @@ export const PLAYBACK_CEILING_MAX_MS = 600_000
 /**
  * Absolute bound on one browser reply, in milliseconds. It finishes the reply
  * even when the speaking flag stays true forever, so the speaking poll always
- * stops. Far beyond any real reply: the spoken answer is capped at four
- * sentences, so a reply that speaks this long is a wedged engine.
+ * stops. When the flag still reads true at this bound, the reply is cancelled
+ * before the chain moves on, so two replies never speak at once. No code caps
+ * the length of a reply, so this value is a wait policy, not a limit on speech.
  */
 export const PLAYBACK_ABSOLUTE_MAX_MS = 900_000
 
@@ -71,7 +72,9 @@ export const ENGINE_START_FALLBACK_MS = 2_000
 /**
  * Milliseconds between reads of `speechSynthesis.speaking` while a browser
  * reply is spoken. The reply ends on the first false read after the utterance
- * has started (see {@link ENGINE_START_FALLBACK_MS} for engines without `onstart`).
+ * has started. For an engine without `onstart` (see
+ * {@link ENGINE_START_FALLBACK_MS}), it ends on the second of two consecutive
+ * false reads, so the reads that decide it are this interval apart.
  */
 export const SPEAKING_POLL_MS = 250
 
