@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Config, resolveConfig, MAX_RECORD_SECONDS } from '../src/config.ts'
+import { resolveSttEngine } from '../src/service.ts'
 
 describe('Config schema', () => {
   it('fills every leaf default on an empty input', () => {
@@ -71,5 +72,32 @@ describe('resolveConfig', () => {
     expect(resolved.vadSilenceMs).toBe(1_500)
     expect(resolved.vadEnergyThreshold).toBe(0.01)
     expect(() => resolveConfig({ record: { vad: { silenceMs: 10 } } })).toThrow(/silenceMs/u)
+  })
+})
+
+describe('STT engine with blank endpoints', () => {
+  // cordis.patch.yml ships funasr.url, funasr.model and whisper.modelPath as ''.
+  // A blank value means "not configured": auto must resolve to web, not funasr.
+  it('resolves the shipped default (auto, blank endpoints) to web', () => {
+    const resolved = resolveConfig({ stt: { engine: 'auto', funasr: { url: '', model: '' }, whisper: { modelPath: '' } } })
+    expect(resolved.funasrUrl).toBeNull()
+    expect(resolved.funasrModel).toBeNull()
+    expect(resolved.whisperModelPath).toBeNull()
+    expect(resolveSttEngine(resolved)).toBe('web')
+  })
+
+  it('resolves an empty config to web', () => {
+    expect(resolveSttEngine(resolveConfig({}))).toBe('web')
+  })
+
+  it('still resolves auto to funasr once a url is set', () => {
+    const resolved = resolveConfig({ stt: { engine: 'auto', funasr: { url: 'http://127.0.0.1:8002', model: 'nemotron-3.5' } } })
+    expect(resolved.funasrUrl).toBe('http://127.0.0.1:8002')
+    expect(resolveSttEngine(resolved)).toBe('funasr')
+  })
+
+  it('rejects funasr and whisper selected with blank endpoints', () => {
+    expect(() => resolveConfig({ stt: { engine: 'funasr', funasr: { url: '' } } })).toThrow(/funasr.url is not set/u)
+    expect(() => resolveConfig({ stt: { engine: 'whisper', whisper: { modelPath: '' } } })).toThrow(/whisper.modelPath is not set/u)
   })
 })

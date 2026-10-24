@@ -338,6 +338,15 @@ function nullableStringOf(value: unknown, label: string): string | null {
   return value
 }
 
+/**
+ * A blank endpoint or model is "not configured". The shipped cordis.patch.yml
+ * ships funasr.url, funasr.model and whisper.modelPath as '', so keeping '' as a
+ * value would make `auto` pick funasr or whisper with nothing to call.
+ */
+function blankAsNull(value: string | null): string | null {
+  return value === null || value.trim() === '' ? null : value
+}
+
 function booleanOf(value: unknown, fallback: boolean, label: string): boolean {
   if (value === undefined) return fallback
   if (typeof value !== 'boolean') throw new TypeError(`dsh-talk: config.${label} must be a boolean`)
@@ -391,11 +400,11 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
   const sttInterim = booleanOf(stt.interim, true, 'stt.interim')
   const sttSilenceFinaliseMs = numberOf(stt.silenceFinaliseMs, DEFAULT_SILENCE_FINALISE_MS, 500, 15000, 'stt.silenceFinaliseMs')
 
-  const funasrUrl = nullableStringOf(stt.funasr?.url, 'stt.funasr.url')
-  const funasrModel = nullableStringOf(stt.funasr?.model, 'stt.funasr.model')
+  const funasrUrl = blankAsNull(nullableStringOf(stt.funasr?.url, 'stt.funasr.url'))
+  const funasrModel = blankAsNull(nullableStringOf(stt.funasr?.model, 'stt.funasr.model'))
   const whisperCommand = stringOf(stt.whisper?.command, 'whisper-cli', 'stt.whisper.command')
   if (whisperCommand.length === 0) throw new Error('dsh-talk: config.stt.whisper.command must not be empty')
-  const whisperModelPath = nullableStringOf(stt.whisper?.modelPath, 'stt.whisper.modelPath')
+  const whisperModelPath = blankAsNull(nullableStringOf(stt.whisper?.modelPath, 'stt.whisper.modelPath'))
   const whisperLanguage = nullableStringOf(stt.whisper?.language, 'stt.whisper.language')
 
   const ttsEngineRaw = tts.engine ?? 'auto'
