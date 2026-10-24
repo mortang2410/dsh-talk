@@ -12,13 +12,11 @@
           enabled: true
           # Optional toggle hotkey such as "alt+r"; unset = click only.
           hotkey: null
-          # Recording cap in seconds (1..600).
-          maxSeconds: 60
           # Submit the transcription as the user message (false = fill the draft).
           autoSubmit: false
-          # Voice-activity detection: silence auto-ends the recording.
+          # Voice-activity detection, always on (enabled must stay true): silence auto-ends the recording.
           vad:
-            # Detect silence and auto-end (degrades when AudioContext is absent).
+            # Needs AudioContext; without it the mic shows an error and records nothing.
             enabled: true
             # Consecutive silence in milliseconds before auto-end (200..10000).
             silenceMs: 1500

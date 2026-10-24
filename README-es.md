@@ -105,9 +105,8 @@ Todos los ajustes son campos `Config` de Schemastery (modificables desde cordis.
 |---|---|---|
 | `record.enabled` | `true` | Mostrar el botón de micrófono del compositor |
 | `record.hotkey` | *(ninguna)* | Atajo opcional, p. ej. `"alt+r"` |
-| `record.maxSeconds` | `60` | Límite de grabación en segundos (1..600) |
 | `record.autoSubmit` | `false` | Enviar la transcripción como mensaje del usuario (false = rellenar el borrador) |
-| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | Detección de actividad de voz: el silencio termina la grabación automáticamente (degrada a parada manual sin `AudioContext`) |
+| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | Detección de actividad de voz, siempre activa (`enabled` debe ser `true`): el silencio termina la grabación automáticamente. Sin `AudioContext` el micrófono muestra un error y no graba |
 | `stt.engine` | `auto` | `auto` / `web` / `funasr` / `whisper`; auto prefiere un motor local configurado, luego Web Speech |
 | `stt.language` | `auto` | Idioma BCP-47 o `auto` |
 | `stt.interim` | `true` | Mostrar transcripciones intermedias (Web Speech) |

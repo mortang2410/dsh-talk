@@ -114,9 +114,8 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 |---|---|---|
 | `record.enabled` | `true` | 显示输入框麦克风按钮 |
 | `record.hotkey` | *(无)* | 可选切换快捷键，如 `"alt+r"` |
-| `record.maxSeconds` | `60` | 录音上限（秒，1..600） |
 | `record.autoSubmit` | `false` | 转写结果直接作为用户消息提交（false = 回填草稿） |
-| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | 语音活动检测：静音自动结束录音（缺 AudioContext 时降级为手动停止） |
+| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | 语音活动检测，始终开启（`enabled` 必须为 `true`）：静音自动结束录音。缺 AudioContext 时麦克风显示错误且不录音 |
 | `stt.engine` | `auto` | `auto` / `web` / `funasr` / `whisper`；auto 优先已配置的本地引擎，其次 Web Speech |
 | `stt.language` | `auto` | BCP-47 语言或 `auto` |
 | `stt.interim` | `true` | 显示中间转写（Web Speech） |
