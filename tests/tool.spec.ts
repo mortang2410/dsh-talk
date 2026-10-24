@@ -195,3 +195,21 @@ describe('speakableText', () => {
     expect(speakableText('| a | b |\n|---|---|')).toBe('')
   })
 })
+
+describe('speakableText: the leaks the review probes found', () => {
+  it('drops a table whose rows have a single pipe with spaces around it', () => {
+    // Breaks if: a two-column table without edge pipes is spoken as prose.
+    expect(speakableText('name | value\nfoo | 1\nbar | 2')).toBe('')
+  })
+
+  it('drops a URL with no scheme', () => {
+    // Breaks if: "www.example.com" reaches the speaker.
+    expect(speakableText('see www.example.com for details')).toBe('see for details')
+    expect(speakableText('see example.com/docs for details')).toBe('see for details')
+  })
+
+  it('returns nothing when stripping leaves only punctuation', () => {
+    // Breaks if: the caller is handed "..." and synthesizes it.
+    expect(speakableText('```\ncode\n```\n...')).toBe('')
+  })
+})

@@ -45,9 +45,10 @@ export function renderSpeak(args: { text: string }, value: {
 /** A fenced code block opener or closer: a run of three backticks or tildes. */
 const FENCE_LINE = /^\s*(```|~~~)/u
 
-/** A markdown table row or separator: two or more pipes on one line. */
+/** A markdown table row or separator: two or more pipes, or one pipe with space on both sides. */
 function isTableLine(line: string): boolean {
-  return (line.match(/\|/gu) ?? []).length >= 2
+  if ((line.match(/\|/gu) ?? []).length >= 2) return true
+  return /\S\s+\|\s+\S/u.test(line)
 }
 
 /**
@@ -77,14 +78,19 @@ export function speakableText(raw: string): string {
     if (/^( {4}|\t)/u.test(line) || isTableLine(line)) continue
     kept.push(line)
   }
-  return kept.join(' ')
+  const joined = kept.join(' ')
     .replace(/https?:\/\/\S+/giu, ' ')
+    .replace(/(?<![\w.])www\.[\w.-]+\S*/giu, ' ')
+    .replace(/(?<![\w.])[\w-]+(?:\.(?:com|org|net|io|dev|ai|co|app|sh))\b\S*/giu, ' ')
     .replace(/(?<=^|\s)(?:~|\.{1,2})?\/\S+/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]{1,8}(?![\w/])/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+){2,}(?![\w/])/gu, ' ')
     .replace(/`/gu, '')
     .replace(/\s+/gu, ' ')
     .trim()
+  // Punctuation on its own is not speakable: report nothing rather than let the caller
+  // synthesize a dot or a dash.
+  return /[\p{L}\p{N}]/u.test(joined) ? joined : ''
 }
 
 /**
