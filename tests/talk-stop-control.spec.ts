@@ -192,13 +192,21 @@ describe('stop control decisions (pure)', () => {
   })
 
   it('barge-in stops audible playback and cancels only when a turn is running', () => {
-    expect(planBargeIn({ playing: true, turnRunning: true })).toEqual({ stopPlayback: true, cancelTurn: true })
-    expect(planBargeIn({ playing: true, turnRunning: false })).toEqual({ stopPlayback: true, cancelTurn: false })
+    expect(planBargeIn({ playing: true, turnRunning: true, capturing: false })).toEqual({ stopPlayback: true, cancelTurn: true })
+    expect(planBargeIn({ playing: true, turnRunning: false, capturing: false })).toEqual({ stopPlayback: true, cancelTurn: false })
+  })
+
+  it('a capture suppresses the cancel but still stops playback', () => {
+    // Breaks if: a reply's echo, heard through the capture's own stream, can cancel the turn.
+    // The stop control still cancels deliberately; barge-in does not, because an accidental
+    // cancel destroys the turn the user was waiting for.
+    expect(planBargeIn({ playing: true, turnRunning: true, capturing: true })).toEqual({ stopPlayback: true, cancelTurn: false })
+    expect(planBargeIn({ playing: false, turnRunning: true, capturing: true })).toEqual({ stopPlayback: false, cancelTurn: false })
   })
 
   it('barge-in with nothing audible cancels nothing', () => {
-    expect(planBargeIn({ playing: false, turnRunning: true })).toEqual({ stopPlayback: false, cancelTurn: false })
-    expect(planBargeIn({ playing: false, turnRunning: false })).toEqual({ stopPlayback: false, cancelTurn: false })
+    expect(planBargeIn({ playing: false, turnRunning: true, capturing: false })).toEqual({ stopPlayback: false, cancelTurn: false })
+    expect(planBargeIn({ playing: false, turnRunning: false, capturing: false })).toEqual({ stopPlayback: false, cancelTurn: false })
   })
 
   it('the control is visible only while audio plays or a turn runs', () => {

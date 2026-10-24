@@ -216,7 +216,7 @@ export async function apply(ctx: Context): Promise<void> {
       name: 'conversation.input.left',
       id: 'talk-mic',
       order: 20,
-      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel: t('stop') }),
+      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel: t('stop'), cancelLabel: t('cancelTurn') }),
     }, TalkMicButton))
 
     slots.inject('settings.plugins.tab', () => slots.register({

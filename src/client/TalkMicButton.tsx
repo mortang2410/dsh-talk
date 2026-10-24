@@ -23,8 +23,8 @@ import {
   isSpeechFrame,
   LISTENER_CONSECUTIVE_FRAMES,
   LISTENER_ONSET_MS,
+  LISTENER_FLOOR,
   LISTENER_TICK_MS,
-  listenerFloor,
   rmsOf,
   silenceTrips,
 } from './vad.ts'
@@ -78,6 +78,8 @@ export interface TalkMicInjected {
   cancelTurn?: (sessionId: string) => Promise<void>
   /** The stop control's localized `title` and `aria-label`, resolved by the plugin's locale dictionary. */
   stopLabel?: string
+  /** Accessible label while armed: the next press cancels the running turn. */
+  cancelLabel?: string
 }
 
 /** How one playing reply is stopped. `begin` registers it; the returned function ends it. */
@@ -473,7 +475,7 @@ function playAudioEntry(
  * @returns the button element.
  */
 export function TalkMicButton(props: TalkMicProps): ReactNode {
-  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel = '' } = props
+  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel = '', cancelLabel = '' } = props
   const inputActions = (props as Partial<Record<'inputActions', RuntimeInputActions>>).inputActions
   const sessionIdProp = (props as Partial<Record<'sessionId', unknown>>).sessionId
   const writeDraft = (text: string): void => {
@@ -937,7 +939,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   // Speech detected by the listener: stop audible playback, and cancel the turn only when audio was audible.
   // Barge-in cancels in one stage, unlike the two-stage stop button: a voice cannot press a button twice.
   const bargeIn = (): void => {
-    const plan = planBargeIn({ playing: playingRef.current, turnRunning: turnRunningRef.current })
+    const plan = planBargeIn({ playing: playingRef.current, turnRunning: turnRunningRef.current, capturing: captureRef.current !== null })
     if (plan.stopPlayback) stopPlayback()
     if (plan.cancelTurn) void cancelTurnNow()
   }
@@ -983,7 +985,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
     const buffer = new Float32Array(listener.analyser.fftSize)
     listener.analyser.getFloatTimeDomainData(buffer)
-    const floor = listenerFloor(settingsRef.current?.record.vad.energyThreshold ?? 0.01)
+    const floor = LISTENER_FLOOR
     listenRunRef.current = advanceSpeechRun(listenRunRef.current, isSpeechFrame(rmsOf(buffer), floor))
     if (listenRunRef.current >= LISTENER_CONSECUTIVE_FRAMES) bargeIn()
   }
@@ -1346,8 +1348,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
             data-playing={playing ? 'true' : 'false'}
             data-turn-running={turnRunning ? 'true' : 'false'}
             data-armed={armed ? 'true' : 'false'}
-            aria-label={stopLabel}
-            title={stopLabel}
+            aria-label={armed ? cancelLabel : stopLabel}
+            title={armed ? cancelLabel : stopLabel}
             onClick={onStopPress}
           >
             ■

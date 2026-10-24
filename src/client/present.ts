@@ -124,8 +124,12 @@ export interface BargeInPlan {
  * @param input - playback and turn state at the detection.
  * @returns which effects apply.
  */
-export function planBargeIn(input: { playing: boolean; turnRunning: boolean }): BargeInPlan {
-  return { stopPlayback: input.playing, cancelTurn: input.playing && input.turnRunning }
+export function planBargeIn(input: { playing: boolean; turnRunning: boolean; capturing: boolean }): BargeInPlan {
+  // While a capture runs, the listener hears the capture's own stream, so a reply's echo can
+  // look like speech. Barge-in may stop that playback, but never cancels the turn there: an
+  // accidental cancel destroys the turn the user was waiting for, and the stop control still
+  // cancels deliberately.
+  return { stopPlayback: input.playing, cancelTurn: input.playing && input.turnRunning && !input.capturing }
 }
 
 /** The facts the built-in Escape stop reads before it cancels a session's turn. */

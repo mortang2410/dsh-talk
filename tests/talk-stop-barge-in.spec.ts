@@ -17,11 +17,9 @@ import { SPEECH_POLL_MS } from '../src/client/speechPoll.ts'
 import {
   advanceSpeechRun,
   LISTENER_CONSECUTIVE_FRAMES,
-  LISTENER_FLOOR_MAX,
-  LISTENER_FLOOR_MIN,
   LISTENER_ONSET_MS,
   LISTENER_TICK_MS,
-  listenerFloor,
+  LISTENER_FLOOR,
 } from '../src/client/vad.ts'
 import type { TalkAudio, TalkLatest, TalkStatus } from '../src/wire.ts'
 
@@ -288,18 +286,12 @@ describe('listener run (pure)', () => {
   })
 })
 
-describe('listener floor (pure, clamped)', () => {
-  it('the default threshold 0.01 gives the 0.05 floor, unchanged', () => {
-    expect(listenerFloor(0.01)).toBeCloseTo(0.05, 10)
-  })
-
-  it('a threshold of 0.2 is held at the ceiling, not 1.0, so speech can still trip the listener', () => {
-    expect(listenerFloor(0.2)).toBe(LISTENER_FLOOR_MAX)
-    expect(listenerFloor(0.2)).toBeLessThan(1)
-  })
-
-  it('a threshold of 0 is raised to the minimum, so silence-level noise cannot trip the listener', () => {
-    expect(listenerFloor(0)).toBe(LISTENER_FLOOR_MIN)
+describe('listener floor (pure)', () => {
+  it('is a fixed constant, so a configured capture threshold cannot disable or flatten it', () => {
+    // Breaks if: the floor goes back to a multiple of record.vad.energyThreshold. A multiple
+    // reached 1.0 at a threshold of 0.2, which no speech crosses, and flattened every threshold
+    // from 0.04 upward onto the same number.
+    expect(LISTENER_FLOOR).toBeCloseTo(0.05, 10)
   })
 })
 
@@ -563,7 +555,7 @@ describe('barge-in while a reply is audible', () => {
     expect(player?.pauses).toBe(0)
   })
 
-  it('during a capture, sustained speech on the listener still stops the reply and cancels the turn once', async () => {
+  it('during a capture, sustained speech on the listener stops the reply and does not cancel the turn', async () => {
     mount()
     await advance(0)
     setRunning(true)
@@ -577,7 +569,10 @@ describe('barge-in while a reply is audible', () => {
     queueOn(micStreams[0], speech(20), 1)
     await advance(TICK_MS * 4)
     expect(FiringAudio.instances[0]?.pauses).toBe(1)
-    expect(turn.cancels).toEqual([SESSION])
+    // The cancel is suppressed while a capture runs: the listener is reading the capture's own
+    // stream, so a reply's echo can look like speech, and an accidental cancel would destroy the
+    // turn the user is waiting for. The stop control still cancels deliberately.
+    expect(turn.cancels).toEqual([])
     expect(getUserMedia).toHaveBeenCalledTimes(1)
   })
 

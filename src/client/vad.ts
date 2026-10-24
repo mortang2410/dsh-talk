@@ -42,30 +42,14 @@ export function silenceTrips(silenceMs: number, thresholdMs: number): boolean {
 }
 
 /**
- * Barge-in listener: its energy floor is this multiple of the configured capture threshold.
- * Residual echo from the reply's own speaker output sits below normal speech, so the listener
- * needs a higher floor than the capture. 5x gives 0.05 at the default 0.01. Not measured on
- * real speakers: only a real-speaker run can confirm the value.
+ * Barge-in listener energy floor. A reply through speakers is picked up by the microphone, so
+ * the listener needs a higher floor than the capture path. 0.05 is a judgement that residual
+ * echo sits below normal speech at conversational distance, and only a real-speaker run can
+ * confirm it. It is a fixed value, not a multiple of the capture threshold: coupling them
+ * flattened every configured threshold from 0.04 upward onto the same number, which carried
+ * no information.
  */
-export const LISTENER_ENERGY_MULTIPLIER = 5
-
-/**
- * Bounds of the listener floor. The configured threshold runs 0 to 1, so an unclamped
- * multiple reaches 1.0 at a threshold of 0.2 and no float speech can ever trip it. The
- * ceiling keeps the floor reachable by speech; the floor keeps silence-level noise off the trigger.
- */
-export const LISTENER_FLOOR_MIN = 0.03
-export const LISTENER_FLOOR_MAX = 0.2
-
-/**
- * The listener's energy floor for a configured capture threshold: the multiple of the threshold,
- * clamped into [LISTENER_FLOOR_MIN, LISTENER_FLOOR_MAX].
- * @param energyThreshold - the configured capture energy threshold.
- * @returns the listener floor.
- */
-export function listenerFloor(energyThreshold: number): number {
-  return Math.min(LISTENER_FLOOR_MAX, Math.max(LISTENER_FLOOR_MIN, energyThreshold * LISTENER_ENERGY_MULTIPLIER))
-}
+export const LISTENER_FLOOR = 0.05
 
 /** Listener tick, in milliseconds. Shorter than the capture tick, so the frame count stays precise. */
 export const LISTENER_TICK_MS = 100
