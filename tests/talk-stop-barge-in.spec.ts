@@ -1,11 +1,10 @@
 // @vitest-environment jsdom
 /**
- * Barge-in while a reply is audible. The microphone is acquired when a reply starts,
- * released when it ends by any route, and never held while idle. A capture takes over the
- * listener's stream. Speech reaches the stop through the real component: the listener tick
- * (the reply's own microphone, which needs sustained speech after an onset window) and the
- * capture's segment tick (one speech frame, as before). The microphone, audio context and
- * recorder are stubbed; each analyser read consumes the next value of a frame queue.
+ * Barge-in while a reply is audible. The microphone is acquired when a reply starts and released when it
+ * ends by any route. Barge-in comes from the listener alone: an analyser on the reply's microphone, or on a
+ * running capture's stream. A capture decides segmentation only, and a press on the mic stops the reply first.
+ * The microphone, audio context and recorder are stubbed. Each AudioContext has its own frame queue: each
+ * analyser read takes the next level, and silence once the queue is empty.
  *
  * @module dsh-talk/test/talk-stop-barge-in.spec
  */
@@ -80,36 +79,46 @@ class FakeStream {
   }
 }
 
-/**
- * The analyser's frame queue. Each analyser read consumes the next level: above the floor is speech,
- * and an empty queue reads silence. A test controls exactly which frames arrive, and when.
- */
-let frames: number[] = []
 let micDenied = false
+/** When true, the next microphone request is held until the test resolves it. */
+let micDeferred = false
+let deferredResolve: ((stream: FakeStream) => void) | null = null
 let micStreams: FakeStream[] = []
-const getUserMedia = vi.fn(async (_constraints?: unknown): Promise<FakeStream> => {
-  if (micDenied) throw new Error('NotAllowedError')
+const getUserMedia = vi.fn((_constraints?: unknown): Promise<FakeStream> => {
+  if (micDenied) return Promise.reject(new Error('NotAllowedError'))
+  if (micDeferred) {
+    // One-shot: only the next request is held.
+    micDeferred = false
+    return new Promise<FakeStream>((resolve) => { deferredResolve = resolve })
+  }
   const stream = new FakeStream()
   micStreams.push(stream)
-  return stream
+  return Promise.resolve(stream)
 })
 const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices')
 
-function nextLevel(): number {
-  return frames.length > 0 ? (frames.shift() ?? 0) : 0
-}
-
 class FakeContext {
   static instances: FakeContext[] = []
+  /** The stream this context's source was built on. */
+  source: unknown = undefined
+  /** The levels the next analyser reads take, one per read. */
+  queue: number[] = []
   closed = 0
   constructor() {
     FakeContext.instances.push(this)
   }
-  createMediaStreamSource(_stream: unknown): { connect(target: unknown): void } {
+  createMediaStreamSource(stream: unknown): { connect(target: unknown): void } {
+    this.source = stream
     return { connect() {} }
   }
   createAnalyser(): { fftSize: number; connect(target: unknown): void; getFloatTimeDomainData(buffer: Float32Array): void } {
-    return { fftSize: 0, connect() {}, getFloatTimeDomainData(buffer: Float32Array) { buffer.fill(nextLevel()) } }
+    return {
+      fftSize: 0,
+      connect() {},
+      getFloatTimeDomainData: (buffer: Float32Array) => {
+        buffer.fill(this.queue.shift() ?? 0)
+      },
+    }
   }
   close(): Promise<void> {
     this.closed += 1
@@ -239,20 +248,31 @@ function speech(count: number): number[] {
   return Array.from({ length: count }, () => 0.5)
 }
 
-describe('listener floor (pure, clamped)', () => {
-  it('the default threshold 0.01 gives the 0.05 floor, unchanged', () => {
-    expect(listenerFloor(0.01)).toBeCloseTo(0.05, 10)
-  })
+/** The AudioContexts built on one stream, oldest first: a capture's analyser is built before a listener's on its stream. */
+function contextsOn(stream: FakeStream | undefined): FakeContext[] {
+  return FakeContext.instances.filter((context) => context.source === stream)
+}
 
-  it('a threshold of 0.2 is held at the ceiling, not 1.0, so speech can still trip the listener', () => {
-    expect(listenerFloor(0.2)).toBe(LISTENER_FLOOR_MAX)
-    expect(listenerFloor(0.2)).toBeLessThan(1)
-  })
+/** Set the analyser levels of one AudioContext on a stream (index 0 is the oldest). */
+function queueOn(stream: FakeStream | undefined, levels: number[], index = 0): void {
+  const context = contextsOn(stream)[index]
+  if (context === undefined) throw new Error('no AudioContext on this stream yet')
+  context.queue = levels
+}
 
-  it('a threshold of 0 is raised to the minimum, so silence-level noise cannot trip the listener', () => {
-    expect(listenerFloor(0)).toBe(LISTENER_FLOOR_MIN)
+/** Resolve the held microphone request with a fresh stream, at the moment the test chooses. */
+async function resolveDeferredMic(): Promise<FakeStream> {
+  const stream = new FakeStream()
+  micStreams.push(stream)
+  const resolve = deferredResolve
+  deferredResolve = null
+  micDeferred = false
+  await act(async () => {
+    resolve?.(stream)
+    await vi.advanceTimersByTimeAsync(0)
   })
-})
+  return stream
+}
 
 describe('listener run (pure)', () => {
   it('a speech frame extends the run and a quiet frame resets it to zero', () => {
@@ -265,6 +285,21 @@ describe('listener run (pure)', () => {
     expect(LISTENER_CONSECUTIVE_FRAMES).toBeGreaterThan(1)
     expect(LISTENER_TICK_MS * LISTENER_CONSECUTIVE_FRAMES).toBeGreaterThanOrEqual(300)
     expect(LISTENER_ONSET_MS).toBeGreaterThan(0)
+  })
+})
+
+describe('listener floor (pure, clamped)', () => {
+  it('the default threshold 0.01 gives the 0.05 floor, unchanged', () => {
+    expect(listenerFloor(0.01)).toBeCloseTo(0.05, 10)
+  })
+
+  it('a threshold of 0.2 is held at the ceiling, not 1.0, so speech can still trip the listener', () => {
+    expect(listenerFloor(0.2)).toBe(LISTENER_FLOOR_MAX)
+    expect(listenerFloor(0.2)).toBeLessThan(1)
+  })
+
+  it('a threshold of 0 is raised to the minimum, so silence-level noise cannot trip the listener', () => {
+    expect(listenerFloor(0)).toBe(LISTENER_FLOOR_MIN)
   })
 })
 
@@ -283,7 +318,8 @@ describe('barge-in while a reply is audible', () => {
     FakeRecorder.instances = []
     micStreams = []
     micDenied = false
-    frames = []
+    micDeferred = false
+    deferredResolve = null
     getUserMedia.mockClear()
     turn = { running: false, listeners: [], cancels: [] }
     remoteLatest = null
@@ -351,7 +387,7 @@ describe('barge-in while a reply is audible', () => {
     await advance(0)
     await publish('u1')
     await advance(0)
-    frames = [0.5]
+    queueOn(micStreams[0], [0.5])
     await advance(2000)
     expect(FiringAudio.instances[0]?.pauses).toBe(0)
     expect(micStreams[0]?.stopped).toBe(0)
@@ -362,7 +398,7 @@ describe('barge-in while a reply is audible', () => {
     await advance(0)
     await publish('u1')
     await advance(0)
-    frames = speech(LISTENER_CONSECUTIVE_FRAMES)
+    queueOn(micStreams[0], speech(LISTENER_CONSECUTIVE_FRAMES))
     await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS * LISTENER_CONSECUTIVE_FRAMES + LISTENER_TICK_MS)
     expect(FiringAudio.instances[0]?.pauses).toBe(1)
     expect(micStreams[0]?.stopped).toBe(1)
@@ -373,7 +409,7 @@ describe('barge-in while a reply is audible', () => {
     await advance(0)
     await publish('u1')
     await advance(0)
-    frames = speech(LISTENER_CONSECUTIVE_FRAMES - 1)
+    queueOn(micStreams[0], speech(LISTENER_CONSECUTIVE_FRAMES - 1))
     await advance(3000)
     expect(FiringAudio.instances[0]?.pauses).toBe(0)
   })
@@ -384,11 +420,11 @@ describe('barge-in while a reply is audible', () => {
     await publish('u1')
     await advance(0)
     // Two speech frames, one quiet, then three speech frames: no run of four, so no barge-in.
-    frames = [0.5, 0.5, 0, 0.5, 0.5, 0.5]
+    queueOn(micStreams[0], [0.5, 0.5, 0, 0.5, 0.5, 0.5])
     await advance(3000)
     expect(FiringAudio.instances[0]?.pauses).toBe(0)
     // A fresh run of four speech frames, with nothing carried over from before the quiet frame, does barge in.
-    frames = speech(LISTENER_CONSECUTIVE_FRAMES)
+    queueOn(micStreams[0], speech(LISTENER_CONSECUTIVE_FRAMES))
     await advance(1000)
     expect(FiringAudio.instances[0]?.pauses).toBe(1)
   })
@@ -398,10 +434,10 @@ describe('barge-in while a reply is audible', () => {
     await advance(0)
     await publish('u1')
     await advance(0)
-    frames = speech(LISTENER_CONSECUTIVE_FRAMES)
+    queueOn(micStreams[0], speech(LISTENER_CONSECUTIVE_FRAMES))
     await advance(LISTENER_ONSET_MS - LISTENER_TICK_MS)
     expect(FiringAudio.instances[0]?.pauses).toBe(0)
-    expect(frames.length).toBe(LISTENER_CONSECUTIVE_FRAMES)
+    expect(contextsOn(micStreams[0])[0]?.queue.length).toBe(LISTENER_CONSECUTIVE_FRAMES)
   })
 
   it('a new reply starts its count from zero, so one speech frame after a stop does not barge in', async () => {
@@ -411,16 +447,38 @@ describe('barge-in while a reply is audible', () => {
     await advance(0)
     // Three speech frames read at 500, 600 and 700 ms after reply one starts. Then the reply is stopped by
     // hand at 700 ms, before any quiet frame could reset the count of three.
-    frames = [0.5, 0.5, 0.5]
+    queueOn(micStreams[0], [0.5, 0.5, 0.5])
     await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS * 2)
     pressStop()
     expect(FiringAudio.instances[0]?.pauses).toBe(1)
 
     // Reply two: a single speech frame after its onset must not complete a run carried over from reply one.
-    frames = [0.5]
     await publish('u2')
     await advance(0)
+    queueOn(micStreams[1], [0.5])
     await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS * 3)
+    expect(FiringAudio.instances[1]?.pauses).toBe(0)
+  })
+
+  it('a late listener does not carry the run of the reply it interrupted: one speech frame after its onset does not barge in', async () => {
+    mount()
+    await advance(0)
+    await publish('u1')
+    await advance(0)
+    // Reply one reaches a run of four and is interrupted by it, so the run is left at the threshold.
+    queueOn(micStreams[0], speech(LISTENER_CONSECUTIVE_FRAMES))
+    await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS * LISTENER_CONSECUTIVE_FRAMES + LISTENER_TICK_MS)
+    expect(FiringAudio.instances[0]?.pauses).toBe(1)
+
+    // Reply two's microphone request is held past its onset window, so its listener opens late.
+    micDeferred = true
+    await publish('u2')
+    await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS)
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    const late = await resolveDeferredMic()
+    await advance(0)
+    queueOn(late, [0.5])
+    await advance(TICK_MS)
     expect(FiringAudio.instances[1]?.pauses).toBe(0)
   })
 
@@ -431,7 +489,7 @@ describe('barge-in while a reply is audible', () => {
     await publish('u1')
     await advance(0)
 
-    frames = speech(20)
+    queueOn(micStreams[0], speech(20))
     await advance(TICK_MS * 4)
     expect(FiringAudio.instances[0]?.pauses).toBe(1)
     expect(turn.cancels).toEqual([SESSION])
@@ -444,7 +502,6 @@ describe('barge-in while a reply is audible', () => {
     mount()
     await advance(0)
     setRunning(true)
-    frames = speech(20)
     await advance(2000)
     expect(getUserMedia).not.toHaveBeenCalled()
     expect(turn.cancels).toEqual([])
@@ -468,28 +525,85 @@ describe('barge-in while a reply is audible', () => {
     warn.mockRestore()
   })
 
-  it('capture path: the capture takes the listener stream, and one speech frame through the segment tick stops the reply', async () => {
+  it('pressing the mic while a reply plays stops that playback at once, opens the capture on its own microphone, and cancels nothing', async () => {
     mount()
     await advance(0)
+    setRunning(true)
+    await publish('u1')
+    await advance(0)
+    const player = FiringAudio.instances[0]
+    expect(player?.pauses).toBe(0)
+
+    await pressMic()
+    await advance(0)
+    expect(player?.pauses).toBe(1)
+    expect(stopButton()?.dataset.playing).toBe('false')
+    expect(micStreams[0]?.stopped).toBe(1)
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(turn.cancels).toEqual([])
+  })
+
+  it('a capture tick never cancels the turn: the reply echo in the capture stream does not barge in', async () => {
+    mount()
+    await advance(0)
+    setRunning(true)
+    await pressMic()
+    await advance(0)
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    // The reply starts while the capture runs: its listener reads the capture's stream, with no second microphone.
     await publish('u1')
     await advance(0)
     expect(getUserMedia).toHaveBeenCalledTimes(1)
     const player = FiringAudio.instances[0]
 
+    // The capture (oldest context on its stream) reads sustained speech, the echo level. The listener reads silence.
+    queueOn(micStreams[0], speech(20), 0)
+    await advance(TICK_MS * 4)
+    expect(turn.cancels).toEqual([])
+    expect(player?.pauses).toBe(0)
+  })
+
+  it('during a capture, sustained speech on the listener still stops the reply and cancels the turn once', async () => {
+    mount()
+    await advance(0)
+    setRunning(true)
     await pressMic()
+    await advance(0)
+    await publish('u1')
     await advance(0)
     expect(getUserMedia).toHaveBeenCalledTimes(1)
 
-    // The capture reads once per TICK_MS. One speech frame is enough on this path: the user is talking.
-    frames = [0.5]
-    await advance(TICK_MS)
-    expect(player?.pauses).toBe(1)
+    // The listener (the newer context on the capture stream) reads sustained speech after its onset.
+    queueOn(micStreams[0], speech(20), 1)
+    await advance(TICK_MS * 4)
+    expect(FiringAudio.instances[0]?.pauses).toBe(1)
+    expect(turn.cancels).toEqual([SESSION])
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+  })
+
+  it('a listener request still held when the capture starts is released on arrival, and the capture keeps its own microphone', async () => {
+    mount()
+    await advance(0)
+    micDeferred = true
+    await publish('u1')
+    await advance(0)
     expect(getUserMedia).toHaveBeenCalledTimes(1)
 
-    frames = []
+    // The press stops the reply. The capture opens its own microphone while the listener request is still held.
     await pressMic()
     await advance(0)
-    expect(micStreams[0]?.stopped).toBe(1)
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(FiringAudio.instances[0]?.pauses).toBe(1)
+
+    // A reply plays during the capture: its listener reads the capture's stream, with no third request.
+    await publish('u2')
+    await advance(0)
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+
+    // The held request resolves now, during the capture: its stream is stopped on arrival, the capture's is not.
+    const held = await resolveDeferredMic()
+    expect(held.stopped).toBe(1)
+    expect(micStreams[0]?.stopped).toBe(0)
   })
 
   it('the stop control carries the localized label as title and aria-label', async () => {

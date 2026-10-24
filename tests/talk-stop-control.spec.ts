@@ -318,6 +318,23 @@ describe('stop control (rendered button, stubbed player and turn services)', () 
     expect(turn.cancels).toEqual([])
   })
 
+  it('an armed stop lapses after its 500 ms window: a later press with no audio arms again and cancels nothing', async () => {
+    mount()
+    await advance(0)
+    setRunning(true)
+    await publish('u1')
+    pressStop()
+    expect(FakeAudio.instances[0]?.pauses).toBe(1)
+    expect(stopButton()?.dataset.armed).toBe('true')
+
+    await advance(600)
+    expect(stopButton()?.dataset.armed).toBe('false')
+
+    pressStop()
+    expect(turn.cancels).toEqual([])
+    expect(stopButton()?.dataset.armed).toBe('true')
+  })
+
   it('after a stop, the next reply plays normally', async () => {
     mount()
     await advance(0)

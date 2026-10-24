@@ -113,7 +113,10 @@ export async function apply(ctx: Context): Promise<void> {
   await ctx.remote.$mount(TALK_REMOTE)
 
   const slots = ctx.get('slots') as SlotsFace
-  ctx.inject(['remote.talk', 'conversation'], (scope) => {
+  // The callback runs once every listed service exists. The stop control's turn guard reads
+  // uiConversation and uiSession at mount, so they are hard deps: a late service must not leave
+  // the constants undefined for the whole mount. `sessions` stays optional (rc.8 builds lack it).
+  ctx.inject(['remote.talk', 'conversation', 'uiSession', 'uiConversation'], (scope) => {
     const talk = scope.remote.talk
     const t = scope.locale.bind(NS)
     const unwrap = <T>(result: RemoteResult<T>, method: string): T => {
