@@ -100,42 +100,57 @@ function supportedMime(): string | undefined {
  *
  * @param text - the sanitized utterance text from `talk/latest`.
  * @param delivery - the browser delivery settings, when the snapshot has loaded.
+ * @returns a promise that resolves when the speech ends or fails, so the poller
+ *   can keep it in order with the audio replies.
  */
-function speakWithBrowserVoice(text: string, delivery: TalkStatus['tts']['browser'] | undefined): void {
+function speakWithBrowserVoice(text: string, delivery: TalkStatus['tts']['browser'] | undefined): Promise<void> {
   if (typeof speechSynthesis === 'undefined') {
     console.warn('[dsh-talk] speechSynthesis unavailable')
-    return
+    return Promise.resolve()
   }
-  const utterance = new SpeechSynthesisUtterance(text)
-  const voice = selectBrowserVoice(speechSynthesis.getVoices(), delivery?.voiceName ?? undefined)
-  if (voice !== undefined) utterance.voice = voice
-  if (delivery !== undefined) {
-    utterance.rate = delivery.rate
-    utterance.pitch = delivery.pitch
-  }
-  speechSynthesis.speak(utterance)
+  return new Promise<void>((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(text)
+    const voice = selectBrowserVoice(speechSynthesis.getVoices(), delivery?.voiceName ?? undefined)
+    if (voice !== undefined) utterance.voice = voice
+    if (delivery !== undefined) {
+      utterance.rate = delivery.rate
+      utterance.pitch = delivery.pitch
+    }
+    utterance.onend = () => resolve()
+    utterance.onerror = () => resolve()
+    speechSynthesis.speak(utterance)
+  })
 }
 
 /**
- * Play one cached audio entry. Resolves when playback ends or fails, so the
- * poller can keep utterances in arrival order. Playback failure is silent by
- * design: the utterance is already marked seen and must not be retried.
+ * Play one cached audio entry. Resolves when playback ends, fails, pauses or
+ * aborts, so the poller can keep utterances in arrival order. The poller also
+ * bounds the wait, so a player that fires none of these still releases the
+ * chain. Playback failure is silent by design: the utterance is already marked
+ * seen and must not be retried.
  *
  * @param entry - the audio served by `talk/audio`.
+ * @param onDuration - receives the audio length in seconds once the player knows it.
  */
-function playAudioEntry(entry: TalkAudio): Promise<void> {
+function playAudioEntry(entry: TalkAudio, onDuration: (seconds: number) => void): Promise<void> {
   return new Promise<void>((resolve) => {
     const binary = atob(entry.data)
     const bytes = new Uint8Array(binary.length)
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
     const url = URL.createObjectURL(new Blob([bytes], { type: entry.mime }))
     const player = new Audio(url)
+    let finished = false
     const finish = (): void => {
+      if (finished) return
+      finished = true
       URL.revokeObjectURL(url)
       resolve()
     }
     player.addEventListener('ended', finish)
     player.addEventListener('error', finish)
+    player.addEventListener('pause', finish)
+    player.addEventListener('abort', finish)
+    player.addEventListener('loadedmetadata', () => onDuration(player.duration))
     void Promise.resolve(player.play()).catch(finish)
   })
 }

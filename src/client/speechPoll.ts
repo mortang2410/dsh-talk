@@ -20,6 +20,23 @@ import type { TalkAudio, TalkLatest } from '../wire.ts'
  */
 export const SPEECH_POLL_MS = 700
 
+/**
+ * Longest a `talk/latest` read may take before it counts as failed. Without
+ * this bound one read that never settles would hold the in-flight flag and
+ * stop polling for the rest of the mount.
+ */
+export const READ_TIMEOUT_MS = 5_000
+
+/**
+ * Longest one playback (audio or browser voice) may hold the chain when its
+ * duration is unknown. A player that never fires ended, error, pause or abort
+ * must not silence every later reply.
+ */
+export const PLAYBACK_CAP_MS = 120_000
+
+/** Slack added to a known audio duration before the playback wait is released. */
+export const PLAYBACK_MARGIN_MS = 5_000
+
 /** How many utterance ids are remembered for the play-once rule (oldest dropped first). */
 const SEEN_CAP = 64
 
@@ -29,10 +46,13 @@ export interface SpeechPollDeps {
   latest(sessionId: string): Promise<TalkLatest | null>
   /** Fetch the cached audio of one utterance; null when evicted or never cached. */
   audio(utteranceId: string): Promise<TalkAudio | null>
-  /** Speak text with the browser voice (browser engine: no audio is cached). */
-  speakText(text: string): void
-  /** Play decoded audio; resolves when playback ends or fails. */
-  playAudio(entry: TalkAudio): Promise<void>
+  /** Speak text with the browser voice; resolves when the speech ends or fails. */
+  speakText(text: string): Promise<void>
+  /**
+   * Play decoded audio; resolves when playback ends, fails, pauses or aborts.
+   * Calls onDuration with the length in seconds once the player knows it.
+   */
+  playAudio(entry: TalkAudio, onDuration: (seconds: number) => void): Promise<void>
   /** True while the page is hidden. */
   isHidden(): boolean
   /** Subscribe to visibility changes; returns the unsubscribe function. */
@@ -40,19 +60,82 @@ export interface SpeechPollDeps {
 }
 
 /**
+ * Resolve when `task` settles or when its bound elapses, whichever is first.
+ * The bound is {@link PLAYBACK_CAP_MS} until the task reports a duration, then
+ * the duration plus {@link PLAYBACK_MARGIN_MS}.
+ *
+ * @param task - the playback or speech to wait for; it receives the duration reporter.
+ */
+function boundedPlayback(task: (onDuration: (seconds: number) => void) => Promise<void>): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const done = (): void => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      resolve()
+    }
+    const arm = (ms: number): void => {
+      if (settled) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(done, ms)
+    }
+    arm(PLAYBACK_CAP_MS)
+    let pending: Promise<void>
+    try {
+      pending = task((seconds) => {
+        if (Number.isFinite(seconds) && seconds > 0) arm(seconds * 1000 + PLAYBACK_MARGIN_MS)
+      })
+    } catch {
+      pending = Promise.resolve()
+    }
+    pending.then(done, done)
+  })
+}
+
+/**
+ * Run a read and reject if it has not settled within `ms`. The late result, if
+ * any, is ignored.
+ *
+ * @param start - starts the read; a synchronous throw counts as a rejection.
+ * @param ms - the bound in milliseconds.
+ */
+function withTimeout<T>(start: () => Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('talk/latest read timed out')), ms)
+    Promise.resolve()
+      .then(start)
+      .then(
+        (value) => {
+          clearTimeout(timer)
+          resolve(value)
+        },
+        (error: unknown) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
+  })
+}
+
+/**
  * Start polling for one session's utterances.
  *
- * The first successful read is a seed: its utterance id is marked seen and
- * nothing is played, so a page reload does not replay the last reply. Each
- * later utterance id is requested through `audio` (or spoken, for the browser
- * engine) exactly once. Audio plays in arrival order. Polling pauses while
- * the page is hidden; on becoming visible again the next read is a new seed,
- * so utterances that landed while hidden are skipped rather than replayed.
+ * The first successful read after mount is a seed: its utterance id is marked
+ * seen and nothing is played, so a page reload does not replay the last reply.
+ * Each later utterance id is requested through `audio` (or spoken, for the
+ * browser engine) exactly once. All sound goes through one chain, so replies
+ * play in arrival order and never overlap. Polling pauses while the page is
+ * hidden, and a read that resolves while hidden is dropped. When the page
+ * becomes visible again, the next read plays any reply that is not yet seen,
+ * so a reply that landed while hidden is played once on return.
  *
  * @param sessionId - the session whose utterances to follow.
  * @param deps - remote calls and page hooks.
  * @param intervalMs - poll interval; defaults to {@link SPEECH_POLL_MS}.
- * @returns a function that stops polling and removes the visibility listener.
+ * @returns a function that stops polling, removes the visibility listener, and
+ *   keeps any audio that has not yet started from being handed to the player.
  */
 export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, intervalMs: number = SPEECH_POLL_MS): () => void {
   let stopped = false
@@ -71,14 +154,25 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     }
   }
 
+  // One chain for everything that makes sound, audio and browser voice alike,
+  // so two replies never speak at once. A task whose turn comes after stop()
+  // does not run.
+  const enqueue = (task: (onDuration: (seconds: number) => void) => Promise<void>): void => {
+    playing = playing
+      .then(() => (stopped ? undefined : boundedPlayback(task)))
+      .catch(() => undefined)
+  }
+
   // The audio request starts now, while the cache still holds the entry; the
-  // playback itself waits its turn behind any earlier utterance.
+  // playback waits its turn behind earlier replies.
   const enqueueAudio = (utteranceId: string): void => {
     const fetched = (async () => deps.audio(utteranceId))().catch(() => null)
-    playing = playing
-      .then(() => fetched)
-      .then(entry => (entry === null ? undefined : deps.playAudio(entry)))
-      .catch(() => undefined)
+    enqueue(async (onDuration) => {
+      const entry = await fetched
+      // Audio that resolves after stop() is never handed to the player.
+      if (entry === null || stopped) return
+      await deps.playAudio(entry, onDuration)
+    })
   }
 
   const tick = async (): Promise<void> => {
@@ -87,12 +181,14 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     let latest: TalkLatest | null = null
     let failed = false
     try {
-      latest = await deps.latest(sessionId)
+      latest = await withTimeout(() => deps.latest(sessionId), READ_TIMEOUT_MS)
     } catch {
       failed = true
     }
     inFlight = false
-    if (failed || stopped) return
+    // A read that resolves while the page is hidden is dropped, not played:
+    // the first read after the page is visible again picks the reply up.
+    if (failed || stopped || deps.isHidden()) return
     if (!seeded) {
       seeded = true
       if (latest !== null) remember(latest.utteranceId)
@@ -101,11 +197,8 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     if (latest === null || seen.has(latest.utteranceId)) return
     remember(latest.utteranceId)
     if (latest.engine === 'browser') {
-      try {
-        deps.speakText(latest.text)
-      } catch {
-        // The browser voice is unavailable; the utterance is marked seen anyway.
-      }
+      const text = latest.text
+      enqueue(() => deps.speakText(text))
       return
     }
     enqueueAudio(latest.utteranceId)
@@ -132,7 +225,8 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
       return
     }
     if (timer !== undefined) return
-    seeded = false
+    // No reseed here: the seen set still holds the last reply, so the next
+    // read plays only a reply that landed while hidden.
     run()
   }
 

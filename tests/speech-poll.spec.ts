@@ -1,15 +1,25 @@
 /**
  * The browser's `talk/latest` poll: each new utterance id is played once, in
- * arrival order; the first read after mount or after the page becomes visible
- * is a seed and plays nothing; an evicted entry is silent; polling pauses while
- * the page is hidden. The remote surface (`latest`, `audio`) and the page hooks
- * are stubs, and time is virtual (fake timers), so no DOM or host is needed.
+ * arrival order, and the first successful read after mount is a seed that
+ * plays nothing. Polling pauses while the page is hidden; a reply that lands
+ * meanwhile plays once on return, and returning with no new reply plays
+ * nothing. An evicted entry is silent. A read that never settles times out, and
+ * a player that never settles is released by its bound. The remote surface
+ * (`latest`, `audio`) and the page hooks are stubs, and time is virtual (fake
+ * timers), so no DOM or host is needed.
  *
  * @module dsh-talk/test/speech-poll.spec
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SPEECH_POLL_MS, startSpeechPoll, type SpeechPollDeps } from '../src/client/speechPoll.ts'
+import {
+  PLAYBACK_CAP_MS,
+  PLAYBACK_MARGIN_MS,
+  READ_TIMEOUT_MS,
+  SPEECH_POLL_MS,
+  startSpeechPoll,
+  type SpeechPollDeps,
+} from '../src/client/speechPoll.ts'
 import type { TalkAudio, TalkLatest } from '../src/wire.ts'
 
 const SESSION = 'session-under-test'
@@ -38,9 +48,8 @@ function stubRemote() {
   const evicted = new Set<string>()
   const latestSessions: string[] = []
   const audioRequests: string[] = []
+  // Every audio entry handed to the player (the controller never hands it null).
   const played: string[] = []
-  // Every value handed to the player, including a null that must never arrive.
-  const handed: Array<string | null> = []
   const spoken: string[] = []
   let hidden = false
   const listeners = new Set<() => void>()
@@ -57,12 +66,11 @@ function stubRemote() {
       audioRequests.push(utteranceId)
       return evicted.has(utteranceId) ? null : audioFor(utteranceId)
     },
-    speakText: (text) => {
+    speakText: async (text) => {
       spoken.push(text)
     },
     playAudio: async (entry) => {
-      handed.push(entry === null ? null : entry.utteranceId)
-      if (entry !== null) played.push(entry.utteranceId)
+      played.push(entry.utteranceId)
     },
     isHidden: () => hidden,
     onVisibilityChange: (listener) => {
@@ -79,7 +87,6 @@ function stubRemote() {
     latestSessions,
     audioRequests,
     played,
-    handed,
     spoken,
     listenerCount: () => listeners.size,
     setHidden(value: boolean) {
@@ -148,6 +155,21 @@ describe('startSpeechPoll (talk/latest poll)', () => {
     stop()
   })
 
+  it('a burst: two replies inside one interval means only the newest is requested', async () => {
+    // talk/latest keeps one utterance per session (service.ts:302-311), so
+    // 'first' is overwritten before any poll can read it. This documents that
+    // host limit; the client cannot recover 'first' without a wire change.
+    const remote = stubRemote()
+    const stop = startSpeechPoll(SESSION, remote.deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.state.latest = utterance('first')
+    remote.state.latest = utterance('second')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
+    expect(remote.audioRequests).toEqual(['second'])
+    expect(remote.played).toEqual(['second'])
+    stop()
+  })
+
   it('plays in arrival order even when a later audio response arrives first', async () => {
     const remote = stubRemote()
     let releaseFirst: ((entry: TalkAudio) => void) | undefined
@@ -191,7 +213,6 @@ describe('startSpeechPoll (talk/latest poll)', () => {
     expect(warnSpy).not.toHaveBeenCalled()
     remote.state.latest = utterance('next')
     await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
-    expect(remote.handed).toEqual(['next'])
     expect(remote.played).toEqual(['next'])
     stop()
   })
@@ -223,22 +244,66 @@ describe('startSpeechPoll (talk/latest poll)', () => {
     stop()
   })
 
-  it('pauses while the page is hidden and resumes without replaying what was missed', async () => {
+  it('a reply that lands while the page is hidden plays once on return, and nothing is read or played while hidden', async () => {
     const remote = stubRemote()
     remote.state.latest = utterance('before')
     const stop = startSpeechPoll(SESSION, remote.deps)
     await vi.advanceTimersByTimeAsync(0)
     remote.setHidden(true)
     const callsWhenHidden = remote.latestSessions.length
-    remote.state.latest = utterance('missed-while-hidden')
+    remote.state.latest = utterance('while-hidden')
     await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 5)
     expect(remote.latestSessions.length).toBe(callsWhenHidden)
+    expect(remote.played).toEqual([])
     remote.setHidden(false)
     await vi.advanceTimersByTimeAsync(0)
+    expect(remote.played).toEqual(['while-hidden'])
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 3)
+    expect(remote.played).toEqual(['while-hidden'])
+    stop()
+  })
+
+  it('becoming visible with no new reply plays nothing', async () => {
+    const remote = stubRemote()
+    remote.state.latest = utterance('seen')
+    const stop = startSpeechPoll(SESSION, remote.deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.setHidden(true)
+    remote.setHidden(false)
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 3)
+    expect(remote.audioRequests).toEqual([])
     expect(remote.played).toEqual([])
-    remote.state.latest = utterance('after-visible')
+    stop()
+  })
+
+  it('a read still in flight when the page hides is dropped, and its reply plays once on return', async () => {
+    const remote = stubRemote()
+    let calls = 0
+    let release: ((value: TalkLatest | null) => void) | undefined
+    const deps: SpeechPollDeps = {
+      ...remote.deps,
+      latest: (sessionId) => {
+        calls += 1
+        if (calls === 2) {
+          return new Promise<TalkLatest | null>((resolve) => {
+            release = resolve
+          })
+        }
+        return remote.deps.latest(sessionId)
+      },
+    }
+    const stop = startSpeechPoll(SESSION, deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.state.latest = utterance('in-flight-while-hidden')
     await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
-    expect(remote.played).toEqual(['after-visible'])
+    expect(calls).toBe(2)
+    remote.setHidden(true)
+    release?.(utterance('in-flight-while-hidden'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(remote.played).toEqual([])
+    remote.setHidden(false)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(remote.played).toEqual(['in-flight-while-hidden'])
     stop()
   })
 
@@ -257,5 +322,133 @@ describe('startSpeechPoll (talk/latest poll)', () => {
     await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 5)
     expect(remote.latestSessions.length).toBe(callsAtStop)
     expect(remote.played).toEqual([])
+  })
+
+  it('stop() with audio still being fetched: the audio that resolves afterwards is never handed to the player', async () => {
+    const remote = stubRemote()
+    const held = new Map<string, (entry: TalkAudio) => void>()
+    const deps: SpeechPollDeps = {
+      ...remote.deps,
+      audio: (utteranceId) => {
+        remote.audioRequests.push(utteranceId)
+        return new Promise<TalkAudio>((resolve) => {
+          held.set(utteranceId, resolve)
+        })
+      },
+    }
+    const stop = startSpeechPoll(SESSION, deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.state.latest = utterance('in-flight')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
+    expect(remote.audioRequests).toEqual(['in-flight'])
+    stop()
+    const callsAtStop = remote.latestSessions.length
+    held.get('in-flight')?.(audioFor('in-flight'))
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 3)
+    expect(remote.played).toEqual([])
+    expect(remote.latestSessions.length).toBe(callsAtStop)
+  })
+
+  it('a read that never settles times out, and polling resumes', async () => {
+    const remote = stubRemote()
+    let calls = 0
+    const deps: SpeechPollDeps = {
+      ...remote.deps,
+      latest: (sessionId) => {
+        calls += 1
+        if (calls === 1) return new Promise<TalkLatest | null>(() => {})
+        return remote.deps.latest(sessionId)
+      },
+    }
+    const stop = startSpeechPoll(SESSION, deps)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toBe(1)
+    await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS + SPEECH_POLL_MS * 3)
+    expect(calls).toBeGreaterThan(2)
+    remote.state.latest = utterance('after-hang')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 2)
+    expect(remote.played).toEqual(['after-hang'])
+    stop()
+  })
+
+  it('a player that fires neither ended, error nor pause does not block the next reply: the 120 s cap releases it', async () => {
+    const remote = stubRemote()
+    let firstPlayer = true
+    const deps: SpeechPollDeps = {
+      ...remote.deps,
+      playAudio: (entry) => {
+        remote.played.push(entry.utteranceId)
+        if (firstPlayer) {
+          firstPlayer = false
+          return new Promise<void>(() => {})
+        }
+        return Promise.resolve()
+      },
+    }
+    const stop = startSpeechPoll(SESSION, deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.state.latest = utterance('u1')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
+    expect(remote.played).toEqual(['u1'])
+    remote.state.latest = utterance('u2')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 3)
+    expect(remote.audioRequests).toEqual(['u1', 'u2'])
+    expect(remote.played).toEqual(['u1'])
+    await vi.advanceTimersByTimeAsync(PLAYBACK_CAP_MS)
+    expect(remote.played).toEqual(['u1', 'u2'])
+    stop()
+  })
+
+  it('a known audio duration sets the wait to duration plus margin, not the 120 s cap', async () => {
+    const remote = stubRemote()
+    let firstPlayer = true
+    const deps: SpeechPollDeps = {
+      ...remote.deps,
+      playAudio: (entry, onDuration) => {
+        remote.played.push(entry.utteranceId)
+        if (firstPlayer) {
+          firstPlayer = false
+          onDuration(2)
+          return new Promise<void>(() => {})
+        }
+        return Promise.resolve()
+      },
+    }
+    const stop = startSpeechPoll(SESSION, deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.state.latest = utterance('u1')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
+    remote.state.latest = utterance('u2')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
+    expect(remote.played).toEqual(['u1'])
+    await vi.advanceTimersByTimeAsync(2000 + PLAYBACK_MARGIN_MS)
+    expect(remote.played).toEqual(['u1', 'u2'])
+    stop()
+  })
+
+  it('a browser-engine reply waits for audio still playing, so two things never speak at once', async () => {
+    const remote = stubRemote()
+    let releaseAudio: (() => void) | undefined
+    const deps: SpeechPollDeps = {
+      ...remote.deps,
+      playAudio: (entry) => {
+        remote.played.push(entry.utteranceId)
+        return new Promise<void>((resolve) => {
+          releaseAudio = resolve
+        })
+      },
+    }
+    const stop = startSpeechPoll(SESSION, deps)
+    await vi.advanceTimersByTimeAsync(0)
+    remote.state.latest = utterance('u1')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS)
+    expect(remote.played).toEqual(['u1'])
+    remote.state.latest = utterance('b1', 'browser', 'hello there')
+    await vi.advanceTimersByTimeAsync(SPEECH_POLL_MS * 2)
+    expect(remote.spoken).toEqual([])
+    releaseAudio?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(remote.spoken).toEqual(['hello there'])
+    stop()
   })
 })

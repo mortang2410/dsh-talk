@@ -3,8 +3,10 @@
  * The record button's playback wiring, rendered under jsdom with the remote
  * surface stubbed: the button polls `latest` for the session id it was given,
  * requests `audio` once per new utterance id, does not replay after a remount
- * (a page reload), and stops polling on unmount. The poll rules themselves are
- * covered by `speech-poll.spec.ts`.
+ * (a page reload), stops polling on unmount, and follows page visibility: a
+ * reply that lands while hidden plays once on return. A player that fires
+ * pause or abort, or fires nothing at all, does not hold the next reply. The
+ * poll rules themselves are covered by `speech-poll.spec.ts`.
  *
  * @module dsh-talk/test/talk-mic-playback.spec
  */
@@ -13,7 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
-import type { TalkLatest, TalkStatus } from '../src/wire.ts'
+import { PLAYBACK_CAP_MS, SPEECH_POLL_MS } from '../src/client/speechPoll.ts'
+import type { TalkAudio, TalkLatest, TalkStatus } from '../src/wire.ts'
 
 const SESSION = 'session-mic-under-test'
 const SETTINGS: TalkStatus = {
@@ -43,18 +46,29 @@ interface Remote {
 /** Audio elements the button constructed (one per played utterance). */
 const constructedAudio: string[] = []
 
+/**
+ * What each successive player does: fire ended, fire pause, fire abort, or fire
+ * nothing (a stalled element). Consumed in construction order; default 'end'.
+ */
+type PlayerScript = 'end' | 'pause' | 'abort' | 'hang'
+const playerScripts: PlayerScript[] = []
+
 class FakeAudio {
   private readonly handlers = new Map<string, Array<() => void>>()
+  private readonly script: PlayerScript
   constructor(src: string) {
     constructedAudio.push(src)
+    this.script = playerScripts.shift() ?? 'end'
   }
   addEventListener(type: string, handler: () => void): void {
     this.handlers.set(type, [...(this.handlers.get(type) ?? []), handler])
   }
   play(): Promise<void> {
-    // Playback "ends" on the next microtask, so the queue advances.
+    // The script fires on the next microtask, the way a real element does after play().
     return Promise.resolve().then(() => {
-      for (const handler of this.handlers.get('ended') ?? []) handler()
+      if (this.script === 'hang') return
+      const event = this.script === 'end' ? 'ended' : this.script
+      for (const handler of this.handlers.get(event) ?? []) handler()
     })
   }
 }
@@ -76,6 +90,7 @@ function utterance(utteranceId: string): TalkLatest {
 let container: HTMLElement
 let root: Root | undefined
 let remote: Remote
+let hiddenNow = false
 const originalCreate = (URL as unknown as { createObjectURL?: unknown }).createObjectURL
 const originalRevoke = (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL
 
@@ -86,7 +101,8 @@ function mount(): void {
     transcribe: async () => ({ text: '', engine: 'whisper', language: 'en' }),
     audio: async (utteranceId: string) => {
       remote.audioCalls.push(utteranceId)
-      return { utteranceId, mime: 'audio/mpeg', data: 'AAAA', text: '', engine: 'edge-tts' }
+      const entry: TalkAudio = { utteranceId, mime: 'audio/mpeg', data: 'AAAA', text: '', engine: 'edge-tts' }
+      return entry
     },
     latest: async (sessionId: string) => {
       remote.latestCalls.push(sessionId)
@@ -107,6 +123,14 @@ function unmount(): void {
   root = undefined
 }
 
+/** Change page visibility and fire the event the browser fires on a change. */
+function setHidden(value: boolean): void {
+  hiddenNow = value
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+}
+
 async function advance(ms: number): Promise<void> {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms)
@@ -117,10 +141,12 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+    hiddenNow = false
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hiddenNow })
     vi.stubGlobal('Audio', FakeAudio)
     Object.assign(URL, { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} })
     constructedAudio.length = 0
+    playerScripts.length = 0
     remote = { latestValue: null, latestCalls: [], audioCalls: [] }
     container = document.createElement('div')
     document.body.append(container)
@@ -139,24 +165,29 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     mount()
     await advance(0)
     remote.latestValue = utterance('u1')
-    await advance(700)
+    await advance(SPEECH_POLL_MS)
     expect(remote.audioCalls).toEqual(['u1'])
     expect(constructedAudio).toHaveLength(1)
-    await advance(700 * 3)
+    await advance(SPEECH_POLL_MS * 3)
     expect(remote.audioCalls).toEqual(['u1'])
     expect(constructedAudio).toHaveLength(1)
     expect(new Set(remote.latestCalls)).toEqual(new Set([SESSION]))
   })
 
-  it('a remount (page reload) does not replay the utterance cached before it', async () => {
+  it('a remount (page reload) does not replay the utterance cached before it, and still plays a new one', async () => {
     remote.latestValue = utterance('before-reload')
     mount()
     await advance(0)
     unmount()
     mount()
-    await advance(700 * 2)
+    await advance(SPEECH_POLL_MS * 2)
     expect(remote.audioCalls).toEqual([])
     expect(constructedAudio).toHaveLength(0)
+    // Positive control: the poll is alive after the remount, so a new reply plays.
+    remote.latestValue = utterance('after-reload')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(remote.audioCalls).toEqual(['after-reload'])
+    expect(constructedAudio).toHaveLength(1)
   })
 
   it('unmounting stops the poll', async () => {
@@ -165,7 +196,69 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     const callsBeforeUnmount = remote.latestCalls.length
     expect(callsBeforeUnmount).toBeGreaterThan(0)
     unmount()
-    await advance(700 * 5)
+    await advance(SPEECH_POLL_MS * 5)
     expect(remote.latestCalls.length).toBe(callsBeforeUnmount)
+  })
+
+  it('a reply that lands while the page is hidden plays once on return, and nothing is requested or played while hidden', async () => {
+    remote.latestValue = utterance('before')
+    mount()
+    await advance(0)
+    setHidden(true)
+    const callsWhenHidden = remote.latestCalls.length
+    remote.latestValue = utterance('while-hidden')
+    await advance(SPEECH_POLL_MS * 4)
+    expect(remote.latestCalls.length).toBe(callsWhenHidden)
+    expect(remote.audioCalls).toEqual([])
+    expect(constructedAudio).toHaveLength(0)
+    setHidden(false)
+    await advance(SPEECH_POLL_MS)
+    expect(remote.audioCalls).toEqual(['while-hidden'])
+    expect(constructedAudio).toHaveLength(1)
+    await advance(SPEECH_POLL_MS * 3)
+    expect(constructedAudio).toHaveLength(1)
+  })
+
+  it('becoming visible with no new reply plays nothing', async () => {
+    remote.latestValue = utterance('seen')
+    mount()
+    await advance(0)
+    setHidden(true)
+    setHidden(false)
+    await advance(SPEECH_POLL_MS * 3)
+    expect(remote.audioCalls).toEqual([])
+    expect(constructedAudio).toHaveLength(0)
+  })
+
+  it('a player that fires pause or abort releases the next reply at once, without waiting for the cap', async () => {
+    playerScripts.push('pause', 'abort', 'end')
+    remote.latestValue = null
+    mount()
+    await advance(0)
+    remote.latestValue = utterance('p1')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(constructedAudio).toHaveLength(1)
+    remote.latestValue = utterance('a1')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(constructedAudio).toHaveLength(2)
+    remote.latestValue = utterance('e1')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(constructedAudio).toHaveLength(3)
+  })
+
+  it('a player that fires neither ended, error, pause nor abort does not block the next reply: the 120 s cap releases it', async () => {
+    playerScripts.push('hang', 'end')
+    remote.latestValue = null
+    mount()
+    await advance(0)
+    remote.latestValue = utterance('h1')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(constructedAudio).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(constructedAudio).toHaveLength(1)
+    await advance(PLAYBACK_CAP_MS)
+    expect(constructedAudio).toHaveLength(2)
+    expect(remote.audioCalls).toEqual(['h1', 'n1'])
   })
 })
