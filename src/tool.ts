@@ -45,6 +45,12 @@ export function renderSpeak(args: { text: string }, value: {
 /** A fenced code block opener or closer: three backticks or tildes, after an optional list marker. */
 const FENCE_LINE = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?(```|~~~)/u
 
+/** A horizontal rule: a line of three or more dashes, asterisks or underscores. */
+const RULE_LINE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/u
+
+/** A whitespace-column table separator: two or more dash or colon groups, no pipes. */
+const COLUMN_RULE = /^\s*(?:-{2,}|:-+:?|:-{2,}:?)(?:\s+(?:-{2,}|:-+:?|:-{2,}:?))+\s*$/u
+
 /** A markdown table row or separator: two or more pipes, or one pipe with space on both sides. */
 function isTableLine(line: string): boolean {
   if ((line.match(/\|/gu) ?? []).length >= 2) return true
@@ -55,17 +61,32 @@ function isTableLine(line: string): boolean {
  * Reduce a written answer to the text that may be spoken. This is the second
  * guard behind the tool description: it does not rely on the model complying.
  * Removes fenced code blocks (through the closing fence, or to the end when
- * unclosed), indented code lines (four spaces or a tab), table rows, URLs,
- * absolute, home-relative and dot-relative paths, and multi-segment relative
- * file paths. Backticks are dropped so inline code words stay readable.
+ * unclosed), indented code lines (four spaces or a tab), pipe table rows,
+ * whitespace-column table blocks, inline code spans, URLs, absolute,
+ * home-relative and dot-relative paths, bare filenames and multi-segment
+ * relative file paths.
  *
  * @param raw - the text the model passed to the tool.
  * @returns the speakable text; empty when nothing else remains.
  */
 export function speakableText(raw: string): string {
+  const lines = raw.split(/\r?\n/u)
+  // A column table with no pipes has one signal only: a separator row of dash or
+  // colon groups. Drop the contiguous block around it, header included.
+  const inColumnTable = new Set<number>()
+  const isColumnRow = (line: string | undefined): boolean =>
+    line !== undefined && line.trim() !== '' && /\S\s{2,}\S/u.test(line)
+  for (const [index, line] of lines.entries()) {
+    if (!COLUMN_RULE.test(line)) continue
+    let start = index
+    while (isColumnRow(lines[start - 1])) start -= 1
+    let end = index
+    while (isColumnRow(lines[end + 1])) end += 1
+    for (let row = start; row <= end; row += 1) inColumnTable.add(row)
+  }
   const kept: string[] = []
   let fence: string | null = null
-  for (const line of raw.split(/\r?\n/u)) {
+  for (const [index, line] of lines.entries()) {
     const fenceMatch = FENCE_LINE.exec(line)
     if (fence !== null) {
       if (fenceMatch !== null && fenceMatch[1] === fence) fence = null
@@ -75,6 +96,7 @@ export function speakableText(raw: string): string {
       fence = fenceMatch[1] ?? null
       continue
     }
+    if (inColumnTable.has(index) || RULE_LINE.test(line)) continue
     if (/^( {4}|\t)/u.test(line) || isTableLine(line)) continue
     kept.push(line)
   }
@@ -93,6 +115,9 @@ export function speakableText(raw: string): string {
     .replace(/`/gu, '')
     .replace(/\s+/gu, ' ')
     .trim()
+  // A result that ends on a colon introduced something the filter removed (a fence, a
+  // table, a list). Speaking the lead-in alone says nothing, so report nothing.
+  if (/[:：]$/u.test(joined)) return ''
   // Punctuation on its own is not speakable: report nothing rather than let the caller
   // synthesize a dot or a dash.
   return /[\p{L}\p{N}]/u.test(joined) ? joined : ''

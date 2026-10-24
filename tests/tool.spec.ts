@@ -239,3 +239,26 @@ describe('speakableText: the cases the second review probe found', () => {
     expect(speakableText('go to example.xyz now')).toBe('go to now')
   })
 })
+
+describe('speakableText: tables with no pipes and a lead-in left dangling', () => {
+  it('drops a whitespace-column table block, header row included', () => {
+    expect(speakableText('Name  Count\n----- -----\nAlice  1\nBob  2')).toBe('')
+  })
+
+  it('stops the block at the first line that is not columnar', () => {
+    expect(speakableText('Totals\nName  Count\n----- -----\nAlice  1\nand then prose')).toBe('Totals and then prose')
+  })
+
+  it('drops a horizontal rule', () => {
+    expect(speakableText('Intro\n---\nBody text')).toBe('Intro Body text')
+  })
+
+  it('refuses a lead-in whose payload was removed', () => {
+    expect(speakableText('The result is:\n```json\n{"ok":true}\n```')).toBe('')
+    expect(speakableText('Here is the plan:')).toBe('')
+  })
+
+  it('keeps a colon inside a sentence', () => {
+    expect(speakableText('There are two things: first this, then that.')).toBe('There are two things: first this, then that.')
+  })
+})
