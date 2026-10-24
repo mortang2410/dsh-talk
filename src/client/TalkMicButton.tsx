@@ -18,7 +18,7 @@ import type {} from '../projection.ts'
 import { foldMic, initMic, type MicViewModel } from './present.ts'
 import { advanceSilence, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
-import { startSpeechPoll } from './speechPoll.ts'
+import { PLAYBACK_CAP_MS, startSpeechPoll } from './speechPoll.ts'
 import { recordingToWav16kMono } from './wav.ts'
 import type { TalkAudio, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript } from '../wire.ts'
 
@@ -116,12 +116,22 @@ function supportedMime(): string | undefined {
  * snapshot (`tts.browser`): `talk/latest` carries no per-call voice, rate or
  * pitch, so a speak-tool `voice` override is not applied on this path.
  *
+ * The expected length is reported through `onDuration` before speaking. It
+ * assumes 100 ms per character at rate 1 and is never below the playback cap,
+ * so an engine that never fires `end` holds the chain for at most that
+ * estimate plus the margin.
+ *
  * @param text - the sanitized utterance text from `talk/latest`.
  * @param delivery - the browser delivery settings, when the snapshot has loaded.
+ * @param onDuration - receives the estimated length in seconds before speaking.
  * @returns a promise that resolves when the speech ends or fails, so the poller
  *   can keep it in order with the audio replies.
  */
-function speakWithBrowserVoice(text: string, delivery: TalkStatus['tts']['browser'] | undefined): Promise<void> {
+function speakWithBrowserVoice(
+  text: string,
+  delivery: TalkStatus['tts']['browser'] | undefined,
+  onDuration: (seconds: number) => void,
+): Promise<void> {
   if (typeof speechSynthesis === 'undefined') {
     console.warn('[dsh-talk] speechSynthesis unavailable')
     return Promise.resolve()
@@ -134,6 +144,8 @@ function speakWithBrowserVoice(text: string, delivery: TalkStatus['tts']['browse
       utterance.rate = delivery.rate
       utterance.pitch = delivery.pitch
     }
+    const rate = Math.max(0.1, delivery?.rate ?? 1)
+    onDuration(Math.max(PLAYBACK_CAP_MS / 1000, (text.length * 100) / 1000 / rate))
     utterance.onend = () => resolve()
     utterance.onerror = () => resolve()
     speechSynthesis.speak(utterance)
@@ -509,7 +521,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     return startSpeechPoll(sessionIdProp, {
       latest,
       audio,
-      speakText: (text) => speakWithBrowserVoice(text, settingsRef.current?.tts.browser),
+      speakText: (text, onDuration) => speakWithBrowserVoice(text, settingsRef.current?.tts.browser, onDuration),
       playAudio: playAudioEntry,
       isHidden: () => typeof document !== 'undefined' && document.hidden,
       onVisibilityChange: (listener) => {

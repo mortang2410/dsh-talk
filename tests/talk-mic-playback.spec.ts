@@ -50,12 +50,17 @@ const constructedAudio: string[] = []
  * What each successive player does: fire ended, fire pause, fire abort, or fire
  * nothing (a stalled element). Consumed in construction order; default 'end'.
  */
-type PlayerScript = 'end' | 'pause' | 'abort' | 'hang'
+type PlayerScript = 'end' | 'pause' | 'abort' | 'hang' | 'hang-with-duration'
 const playerScripts: PlayerScript[] = []
+
+/** Clip length the 'hang-with-duration' script reports, in seconds. */
+const HANG_DURATION_S = 2
 
 class FakeAudio {
   private readonly handlers = new Map<string, Array<() => void>>()
   private readonly script: PlayerScript
+  /** NaN until the script reports a length, as a real element does before loadedmetadata. */
+  duration = Number.NaN
   constructor(src: string) {
     constructedAudio.push(src)
     this.script = playerScripts.shift() ?? 'end'
@@ -67,6 +72,11 @@ class FakeAudio {
     // The script fires on the next microtask, the way a real element does after play().
     return Promise.resolve().then(() => {
       if (this.script === 'hang') return
+      if (this.script === 'hang-with-duration') {
+        this.duration = HANG_DURATION_S
+        for (const handler of this.handlers.get('loadedmetadata') ?? []) handler()
+        return
+      }
       const event = this.script === 'end' ? 'ended' : this.script
       for (const handler of this.handlers.get(event) ?? []) handler()
     })
@@ -219,15 +229,20 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     expect(constructedAudio).toHaveLength(1)
   })
 
-  it('becoming visible with no new reply plays nothing', async () => {
-    remote.latestValue = utterance('seen')
+  it('returning to a page whose last reply is still current does not replay it', async () => {
+    // Replay-on-return guard, the component twin of the speech-poll test. It
+    // catches a seen set cleared on hide; a reversed seed rule passes it.
+    remote.latestValue = null
     mount()
     await advance(0)
+    remote.latestValue = utterance('last')
+    await advance(SPEECH_POLL_MS)
+    expect(constructedAudio).toHaveLength(1)
     setHidden(true)
     setHidden(false)
     await advance(SPEECH_POLL_MS * 3)
-    expect(remote.audioCalls).toEqual([])
-    expect(constructedAudio).toHaveLength(0)
+    expect(remote.audioCalls).toEqual(['last'])
+    expect(constructedAudio).toHaveLength(1)
   })
 
   it('a player that fires pause or abort releases the next reply at once, without waiting for the cap', async () => {
@@ -260,5 +275,66 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     await advance(PLAYBACK_CAP_MS)
     expect(constructedAudio).toHaveLength(2)
     expect(remote.audioCalls).toEqual(['h1', 'n1'])
+  })
+
+  it('a clip that never ends is released at its reported duration plus the margin, well before the cap', async () => {
+    // Pins the loadedmetadata wiring: the duration must reach the chain.
+    playerScripts.push('hang-with-duration', 'end')
+    remote.latestValue = null
+    mount()
+    await advance(0)
+    remote.latestValue = utterance('d1')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(constructedAudio).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(remote.audioCalls).toEqual(['d1', 'n1'])
+    expect(constructedAudio).toHaveLength(1)
+    // d1 started at 0.7 s with a 2 s duration, so it is released at 0.7 + 2 + 5 = 7.7 s.
+    await advance(4_800)
+    expect(constructedAudio).toHaveLength(1)
+    await advance(200)
+    expect(constructedAudio).toHaveLength(2)
+  })
+
+  it('a browser reply longer than the cap is held for its estimate plus the margin, so the next reply does not speak over it', async () => {
+    class FakeUtterance {
+      text: string
+      rate = 1
+      pitch = 1
+      voice: unknown = undefined
+      onend: (() => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(text: string) {
+        this.text = text
+      }
+    }
+    const spoken: FakeUtterance[] = []
+    vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
+    vi.stubGlobal('speechSynthesis', {
+      getVoices: () => [],
+      speak: (utterance: FakeUtterance) => {
+        spoken.push(utterance)
+      },
+    })
+    remote.latestValue = null
+    mount()
+    await advance(0)
+    // 1500 characters at rate 1 are estimated at 150 s. The browser end never fires.
+    remote.latestValue = { ...utterance('b1'), engine: 'browser', text: 'a'.repeat(1500) }
+    await advance(SPEECH_POLL_MS)
+    expect(spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advance(SPEECH_POLL_MS)
+    expect(remote.audioCalls).toEqual(['n1'])
+    expect(constructedAudio).toHaveLength(0)
+    // Past the 120 s cap the browser reply still holds the next reply.
+    await advance(PLAYBACK_CAP_MS)
+    expect(constructedAudio).toHaveLength(0)
+    await advance(30_000)
+    expect(constructedAudio).toHaveLength(0)
+    // Released at the estimate plus the 5 s margin: 0.7 s + 155 s = 155.7 s.
+    await advance(5_000)
+    expect(constructedAudio).toHaveLength(1)
   })
 })

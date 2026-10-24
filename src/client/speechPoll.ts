@@ -42,12 +42,20 @@ const SEEN_CAP = 64
 
 /** The remote surface and page hooks the controller needs. */
 export interface SpeechPollDeps {
-  /** Read the newest utterance of one session; rejects on transport failure. */
-  latest(sessionId: string): Promise<TalkLatest | null>
+  /**
+   * Read the newest utterance of one session; rejects on transport failure.
+   * `signal` aborts when the read passes {@link READ_TIMEOUT_MS}; an
+   * implementation that cannot cancel its request may ignore it.
+   */
+  latest(sessionId: string, signal: AbortSignal): Promise<TalkLatest | null>
   /** Fetch the cached audio of one utterance; null when evicted or never cached. */
   audio(utteranceId: string): Promise<TalkAudio | null>
-  /** Speak text with the browser voice; resolves when the speech ends or fails. */
-  speakText(text: string): Promise<void>
+  /**
+   * Speak text with the browser voice; resolves when the speech ends or fails.
+   * Calls onDuration with the expected length in seconds before speaking, so
+   * the chain is bounded even when the engine never reports the end.
+   */
+  speakText(text: string, onDuration: (seconds: number) => void): Promise<void>
   /**
    * Play decoded audio; resolves when playback ends, fails, pauses or aborts.
    * Calls onDuration with the length in seconds once the player knows it.
@@ -59,20 +67,33 @@ export interface SpeechPollDeps {
   onVisibilityChange(listener: () => void): () => void
 }
 
+/** What the chain hands a playback task. */
+interface PlaybackContext {
+  /** Reports the duration in seconds; the bound becomes that duration plus {@link PLAYBACK_MARGIN_MS}. */
+  onDuration(seconds: number): void
+  /** True once the chain has released this task, because its bound elapsed or it finished. */
+  released(): boolean
+}
+
 /**
  * Resolve when `task` settles or when its bound elapses, whichever is first.
  * The bound is {@link PLAYBACK_CAP_MS} until the task reports a duration, then
  * the duration plus {@link PLAYBACK_MARGIN_MS}.
  *
- * @param task - the playback or speech to wait for; it receives the duration reporter.
+ * @param task - the playback or speech to wait for; it receives the chain context.
  */
-function boundedPlayback(task: (onDuration: (seconds: number) => void) => Promise<void>): Promise<void> {
+function boundedPlayback(task: (ctx: PlaybackContext) => Promise<void>): Promise<void> {
   return new Promise<void>((resolve) => {
     let settled = false
+    // Set when the chain releases this task. A late reply is dropped rather
+    // than played over the next one: two replies at once is the failure a
+    // listener hears, so a late reply after a stall is the lesser cost.
+    let released = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const done = (): void => {
       if (settled) return
       settled = true
+      released = true
       if (timer !== undefined) clearTimeout(timer)
       resolve()
     }
@@ -82,11 +103,15 @@ function boundedPlayback(task: (onDuration: (seconds: number) => void) => Promis
       timer = setTimeout(done, ms)
     }
     arm(PLAYBACK_CAP_MS)
+    const ctx: PlaybackContext = {
+      onDuration: (seconds) => {
+        if (Number.isFinite(seconds) && seconds > 0) arm(seconds * 1000 + PLAYBACK_MARGIN_MS)
+      },
+      released: () => released,
+    }
     let pending: Promise<void>
     try {
-      pending = task((seconds) => {
-        if (Number.isFinite(seconds) && seconds > 0) arm(seconds * 1000 + PLAYBACK_MARGIN_MS)
-      })
+      pending = task(ctx)
     } catch {
       pending = Promise.resolve()
     }
@@ -95,17 +120,21 @@ function boundedPlayback(task: (onDuration: (seconds: number) => void) => Promis
 }
 
 /**
- * Run a read and reject if it has not settled within `ms`. The late result, if
- * any, is ignored.
+ * Run a read and reject if it has not settled within `ms`. On the timeout the
+ * signal passed to `start` is aborted. The late result, if any, is ignored.
  *
- * @param start - starts the read; a synchronous throw counts as a rejection.
+ * @param start - starts the read with its signal; a synchronous throw counts as a rejection.
  * @param ms - the bound in milliseconds.
  */
-function withTimeout<T>(start: () => Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(start: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('talk/latest read timed out')), ms)
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      controller.abort()
+      reject(new Error('talk/latest read timed out'))
+    }, ms)
     Promise.resolve()
-      .then(start)
+      .then(() => start(controller.signal))
       .then(
         (value) => {
           clearTimeout(timer)
@@ -157,7 +186,7 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
   // One chain for everything that makes sound, audio and browser voice alike,
   // so two replies never speak at once. A task whose turn comes after stop()
   // does not run.
-  const enqueue = (task: (onDuration: (seconds: number) => void) => Promise<void>): void => {
+  const enqueue = (task: (ctx: PlaybackContext) => Promise<void>): void => {
     playing = playing
       .then(() => (stopped ? undefined : boundedPlayback(task)))
       .catch(() => undefined)
@@ -167,11 +196,13 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
   // playback waits its turn behind earlier replies.
   const enqueueAudio = (utteranceId: string): void => {
     const fetched = (async () => deps.audio(utteranceId))().catch(() => null)
-    enqueue(async (onDuration) => {
+    enqueue(async (ctx) => {
       const entry = await fetched
       // Audio that resolves after stop() is never handed to the player.
       if (entry === null || stopped) return
-      await deps.playAudio(entry, onDuration)
+      // Audio that resolves after the chain released this task is dropped.
+      if (ctx.released()) return
+      await deps.playAudio(entry, ctx.onDuration)
     })
   }
 
@@ -181,7 +212,7 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     let latest: TalkLatest | null = null
     let failed = false
     try {
-      latest = await withTimeout(() => deps.latest(sessionId), READ_TIMEOUT_MS)
+      latest = await withTimeout((signal) => deps.latest(sessionId, signal), READ_TIMEOUT_MS)
     } catch {
       failed = true
     }
@@ -190,6 +221,10 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     // the first read after the page is visible again picks the reply up.
     if (failed || stopped || deps.isHidden()) return
     if (!seeded) {
+      // Seed: the first successful read after mount marks its reply seen and
+      // plays nothing, so a reload never replays. A mount while hidden seeds on
+      // the first read after the page is visible, so the reply present at mount
+      // is not played either. Replies that arrive after mount play once.
       seeded = true
       if (latest !== null) remember(latest.utteranceId)
       return
@@ -198,7 +233,7 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     remember(latest.utteranceId)
     if (latest.engine === 'browser') {
       const text = latest.text
-      enqueue(() => deps.speakText(text))
+      enqueue((ctx) => deps.speakText(text, ctx.onDuration))
       return
     }
     enqueueAudio(latest.utteranceId)
