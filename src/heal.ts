@@ -20,10 +20,14 @@ export const HEAL_ENDPOINT = 'http://127.0.0.1:8082/v1/chat/completions'
 export const HEAL_MODEL = 'bonsai2-27b'
 
 /**
- * Abort timeout for the heal call, in milliseconds. Warm calls measured 0.15 to 0.34 s.
- * One call after an idle gap took 8.58 s (`research/1cds-heal-recheck.md`). 15 s clears
- * that outlier with about 1.7x headroom. A value under 8.58 s would abort a call the
- * model was still answering, and the fallback would then miss any non-literal form.
+ * Abort timeout for the heal call, in milliseconds. It is a guard against a wedged
+ * server, not a latency budget. Warm sequential calls measured 0.14 to 0.34 s; the first
+ * call after an idle gap measured 4.6 s and 8.6 s, and five of twenty calls timed out at
+ * 15 s while three agents shared the endpoint. The GPU is shared: `ninfer-serve.service`
+ * holds 15.9 of 16.3 GiB and read 99 to 100 percent while other sessions were generating
+ * (`WORKSTREAMS.md`, "Endpoint contention"). Raising the value only makes a failure
+ * slower, because the fallback is what saves the utterance; lowering it below the 8.6 s
+ * outlier would abort a call the model is still answering.
  */
 // TODO(k6fr): promote HEAL_TIMEOUT_MS to a Config field when the capture loop is wired.
 export const HEAL_TIMEOUT_MS = 15_000
