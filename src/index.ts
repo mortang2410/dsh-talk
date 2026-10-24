@@ -84,8 +84,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 
   ctx.effect(() => ctx.tools.register(speakTool(service, resolved.maxSpeakChars)), 'dsh-talk: speak tool')
 
-  // The `talk:speech` projection unit: last-wins fold of spoken utterances,
-  // read by the web client's record button through useProjection.
+  // The `talk:speech` projection unit: last-wins fold of spoken utterances.
+  // It is no longer the browser's playback trigger (the client polls talk/latest).
   ctx.inject(['sessionProjections'], (projectionCtx) => {
     projectionCtx.effect(() => projectionCtx.sessionProjections.register<'talk:speech', ReturnType<typeof initTalkSpeechProjection>>({
       key: 'talk:speech',

@@ -2,10 +2,10 @@
  * The composer microphone button: record with MediaRecorder, transcribe with
  * the browser's Web Speech API when available (interim results included) or
  * through the host's `talk/transcribe` for the local engines, fill the draft
- * (or send directly when auto-submit is on), and play fresh utterances from
- * the `talk:speech` projection (browser voice locally, cached audio through
- * `talk/audio` for the local engines). Pressing record also interrupts host
- * playback (speak-to-interrupt).
+ * (or send directly when auto-submit is on), and play each new utterance of
+ * this session by polling `talk/latest` (browser voice for the browser engine,
+ * cached audio through `talk/audio` for the local engines; see `speechPoll.ts`).
+ * Pressing record also interrupts host playback (speak-to-interrupt).
  *
  * @module dsh-talk/client/TalkMicButton
  */
@@ -16,7 +16,8 @@ import type {} from '../projection.ts'
 import { foldMic, initMic, type MicViewModel } from './present.ts'
 import { advanceSilence, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
-import type { TalkAudio, TalkInterruptResult, TalkStatus, TalkTranscript } from '../wire.ts'
+import { startSpeechPoll } from './speechPoll.ts'
+import type { TalkAudio, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript } from '../wire.ts'
 
 /** Registration-side injected face: the recorder's host/browser bindings. */
 export interface TalkMicInjected {
@@ -28,6 +29,8 @@ export interface TalkMicInjected {
   transcribe: (audioData: string) => Promise<TalkTranscript>
   /** Serve one cached utterance's audio. */
   audio: (utteranceId: string) => Promise<TalkAudio | null>
+  /** Read the newest utterance of one session (playback poll). */
+  latest: (sessionId: string) => Promise<TalkLatest | null>
   /** Write the transcription into the composer draft. */
   setDraft: (text: string) => void
   /** Send the transcription as a user message. */
@@ -42,10 +45,6 @@ export interface TalkMicInjected {
 
 /** Full component props assembled by the input-slot renderer. */
 export type TalkMicProps = PropsRuntime<'conversation.input.left'> & InjectFace<TalkMicInjected>
-  // The projection seat is structural: the alpha.3 session kit carries
-  // `useProjection` on the input-zone standard kit again, but the button still
-  // reads it optionally and casts at the single call site.
-  & { readonly useProjection?: unknown }
 
 /** Structural face of the standard-kit input actions current master feeds every session-scope slot component. */
 interface RuntimeInputActions {
@@ -95,6 +94,53 @@ function supportedMime(): string | undefined {
 }
 
 /**
+ * Speak text with the browser voice. Settings come from the `talk/status`
+ * snapshot (`tts.browser`): `talk/latest` carries no per-call voice, rate or
+ * pitch, so a speak-tool `voice` override is not applied on this path.
+ *
+ * @param text - the sanitized utterance text from `talk/latest`.
+ * @param delivery - the browser delivery settings, when the snapshot has loaded.
+ */
+function speakWithBrowserVoice(text: string, delivery: TalkStatus['tts']['browser'] | undefined): void {
+  if (typeof speechSynthesis === 'undefined') {
+    console.warn('[dsh-talk] speechSynthesis unavailable')
+    return
+  }
+  const utterance = new SpeechSynthesisUtterance(text)
+  const voice = selectBrowserVoice(speechSynthesis.getVoices(), delivery?.voiceName ?? undefined)
+  if (voice !== undefined) utterance.voice = voice
+  if (delivery !== undefined) {
+    utterance.rate = delivery.rate
+    utterance.pitch = delivery.pitch
+  }
+  speechSynthesis.speak(utterance)
+}
+
+/**
+ * Play one cached audio entry. Resolves when playback ends or fails, so the
+ * poller can keep utterances in arrival order. Playback failure is silent by
+ * design: the utterance is already marked seen and must not be retried.
+ *
+ * @param entry - the audio served by `talk/audio`.
+ */
+function playAudioEntry(entry: TalkAudio): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const binary = atob(entry.data)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    const url = URL.createObjectURL(new Blob([bytes], { type: entry.mime }))
+    const player = new Audio(url)
+    const finish = (): void => {
+      URL.revokeObjectURL(url)
+      resolve()
+    }
+    player.addEventListener('ended', finish)
+    player.addEventListener('error', finish)
+    void Promise.resolve(player.play()).catch(finish)
+  })
+}
+
+/**
  * The record button itself. All browser capability reads are feature-detected
  * and degrade to a disabled button with no throw.
  *
@@ -102,7 +148,7 @@ function supportedMime(): string | undefined {
  * @returns the button element.
  */
 export function TalkMicButton(props: TalkMicProps): ReactNode {
-  const { status, interrupt, transcribe, audio, setDraft, send, useProjection, forSession } = props
+  const { status, interrupt, transcribe, audio, latest, setDraft, send, forSession } = props
   const inputActions = (props as Partial<Record<'inputActions', RuntimeInputActions>>).inputActions
   const sessionIdProp = (props as Partial<Record<'sessionId', unknown>>).sessionId
   const writeDraft = (text: string): void => {
@@ -407,52 +453,26 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, recording])
 
-  // Playback: fresh utterances from the talk:speech projection. The seat is
-  // optional on this host line, so the hook is only called when the kit
-  // actually provides it — calling an undefined `useProjection` threw and took
-  // the whole button down; now a missing seat simply means no playback while
-  // the mic itself keeps working. The prop is stable for the component's
-  // lifetime (the slot kit either supplies the seat for the whole mount or
-  // never does), so the conditional call cannot reorder hooks.
-  const readProjection = typeof useProjection === 'function'
-    ? useProjection as unknown as (unit: 'talk:speech') => {
-      utteranceId: string
-      engine?: string
-      text?: string
-      voice?: string
-      rate?: number
-      pitch?: number
-    } | null | undefined
-    : undefined
-  const speech = readProjection === undefined ? undefined : readProjection('talk:speech')
-  const playedRef = useRef<string | null>(null)
+  // Playback: poll talk/latest for this session and play each new utterance
+  // once (speechPoll.ts). The session id arrives as a slot prop; without it
+  // there is no session to ask about, so no poll starts and the mic still works.
+  // The talk:speech projection is no longer a playback trigger: on a host that
+  // does write the event, both paths would play the same reply twice.
   useEffect(() => {
-    if (speech === null || speech === undefined || speech.utteranceId === playedRef.current) return
-    playedRef.current = speech.utteranceId
-    if (speech.engine === 'browser') {
-      if (typeof speechSynthesis !== 'undefined') {
-        const utterance = new SpeechSynthesisUtterance(speech.text)
-        const voice = selectBrowserVoice(speechSynthesis.getVoices(), speech.voice)
-        if (voice !== undefined) utterance.voice = voice
-        if (speech.rate !== undefined) utterance.rate = speech.rate
-        if (speech.pitch !== undefined) utterance.pitch = speech.pitch
-        speechSynthesis.speak(utterance)
-      } else {
-        console.warn('[dsh-talk] speechSynthesis unavailable')
-      }
-      return
-    }
-    void audio(speech.utteranceId).then(entry => {
-      if (entry === null) return
-      const binary = atob(entry.data)
-      const bytes = new Uint8Array(binary.length)
-      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-      const url = URL.createObjectURL(new Blob([bytes], { type: entry.mime }))
-      const player = new Audio(url)
-      void player.play()
-      player.addEventListener('ended', () => URL.revokeObjectURL(url))
-    }).catch(() => {})
-  }, [speech, audio])
+    if (typeof sessionIdProp !== 'string' || sessionIdProp === '') return undefined
+    return startSpeechPoll(sessionIdProp, {
+      latest,
+      audio,
+      speakText: (text) => speakWithBrowserVoice(text, settingsRef.current?.tts.browser),
+      playAudio: playAudioEntry,
+      isHidden: () => typeof document !== 'undefined' && document.hidden,
+      onVisibilityChange: (listener) => {
+        if (typeof document === 'undefined') return () => {}
+        document.addEventListener('visibilitychange', listener)
+        return () => document.removeEventListener('visibilitychange', listener)
+      },
+    })
+  }, [sessionIdProp, latest, audio])
 
   const disabled = settings === undefined || settings.record.enabled !== true
   const label = recording

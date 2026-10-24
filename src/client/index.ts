@@ -31,6 +31,7 @@ import { installTalkStyles } from './styles.ts'
 import type {
   TalkAudio,
   TalkInterruptResult,
+  TalkLatest,
   TalkSettingsInput,
   TalkSettingsResult,
   TalkStatus,
@@ -100,6 +101,8 @@ export async function apply(ctx: Context): Promise<void> {
       unwrap<TalkTranscript>(await talk.transcribe(audioData), 'transcribe')
     const audio: TalkMicInjected['audio'] = async (utteranceId) =>
       unwrap<TalkAudio | null>(await talk.audio(utteranceId), 'audio')
+    const latest: TalkMicInjected['latest'] = async (sessionId) =>
+      unwrap<TalkLatest | null>(await talk.latest(sessionId), 'latest')
     const conversation = scope.get('conversation') as IConversation | undefined
     // Master's sanctioned id → session-scope-ctx exchange (same pattern
     // ui-commands uses); resolves to undefined when either service is
@@ -127,7 +130,7 @@ export async function apply(ctx: Context): Promise<void> {
       name: 'conversation.input.left',
       id: 'talk-mic',
       order: 20,
-      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, audio, setDraft, send, forSession }),
+      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, audio, latest, setDraft, send, forSession }),
     }, TalkMicButton))
 
     slots.inject('settings.plugins.tab', () => slots.register({
