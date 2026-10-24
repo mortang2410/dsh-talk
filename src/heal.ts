@@ -65,12 +65,37 @@ export class HealFailure extends Error {
   }
 }
 
+/** Punctuation a recogniser may append after a phrase. */
+const TRAILING_PUNCTUATION = /[.!?,;:]+\s*$/u
+
 /**
- * The two literal trigger forms of the fallback, ignoring case, only when they end the transcript.
- * `\b` keeps "that is my prompted" from matching. After the phrase, at most one `[.!?]` and
- * trailing whitespace may follow; a second mark or any other word means no match.
+ * Filler a transcript may carry after the phrase. The system prompt tells the model to drop
+ * these, so refusing a phrase that carries one would contradict the model's own instruction.
  */
-const FINAL_LITERAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
+const TRAILING_FILLER = /\b(?:u+m+|u+h+|e+r+|erm|hmm+|mm+|uhm)\b\s*$/iu
+
+/** The text without trailing punctuation and filler words, removed until neither is left. */
+function withoutTrailingNoise(text: string): string {
+  let current = text.trim()
+  for (;;) {
+    const next = current.replace(TRAILING_PUNCTUATION, '').replace(TRAILING_FILLER, '').trimEnd()
+    if (next === current) return current
+    current = next
+  }
+}
+
+/**
+ * Index where the literal phrase that ends `text` begins, or `null`. Trailing punctuation and
+ * filler are ignored, because a recogniser adds them and the prompt already drops them: a
+ * phrase followed by a comma or by "uh" still ends the utterance.
+ */
+function finalPhraseIndex(text: string, pattern: RegExp): number | null {
+  const match = pattern.exec(withoutTrailingNoise(text))
+  return match === null ? null : match.index
+}
+
+/** The two literal trigger forms of the fallback, at the end of the transcript. */
+const FALLBACK_FINAL_PHRASE = /\bthat(?: is |'s )my prompt$/iu
 
 /**
  * The three literal forms the host check uses on a model answer: the two above plus
@@ -85,7 +110,9 @@ const FINAL_LITERAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
  * without touching the variants only the model can recognise.
  */
 const HOST_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b/iu
-const HOST_FINAL_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b[.!?]?\s*$/iu
+const HOST_FINAL_PHRASE = /\bthat(?: is |'s |s )my prompt$/iu
+/** Every literal form anywhere, for removing a phrase the model left inside its own prompt. */
+const HOST_ANY_PHRASE = /\bthat(?: is |'s |s )my prompt\b[.!?,;:]*/giu
 
 /**
  * Heal a raw transcript with exactly one model call and report the trigger decision.
@@ -96,14 +123,16 @@ const HOST_FINAL_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b[.!?]?\s*$/iu
  * on reasoning tokens and returned empty content. If the call fails for any reason (HTTP
  * error, timeout, non-JSON body, empty content, non-boolean `trigger`, non-string
  * `prompt`), the literal-phrase fallback runs on the raw transcript. The fallback decides
- * only when a literal form ends the transcript: it returns `trigger: true` with that
- * phrase stripped. Any other transcript makes it throw.
+ * only when a literal form ends the transcript, ignoring trailing punctuation and filler words:
+ * it returns `trigger: true` with that phrase stripped. Any other transcript makes it throw.
  *
  * When the model call answers `trigger: true`, the host checks the answer against the text
  * (defence in depth; the model still decides every other case):
  * - Veto: a literal form appears in the raw transcript but does not end it. The model has
  *   contradicted the text, so the decision becomes `trigger: false` with the transcript unchanged.
- * - Strip: a literal form still ends the returned prompt. It is removed, with its trailing punctuation.
+ * - Strip: every literal form in the returned prompt is removed, wherever the model left it.
+ * Trailing punctuation and filler words (um, uh, er) never make a phrase count as mid-text, so
+ * "... that is my prompt," and "... that is my prompt uh" are triggers, not vetoes.
  * Each veto is reported through `logOverride`, so a model that keeps contradicting the text is visible.
  *
  * @param rawTranscript - the accumulated raw transcript for the current capture.
@@ -136,16 +165,20 @@ function checkModelDecision(
   logOverride: (message: string) => void,
 ): HealDecision {
   if (!model.trigger) return { trigger: false, prompt: model.prompt, source: 'model' }
-  if (!HOST_FINAL_LITERAL_FORM.test(rawTranscript) && HOST_LITERAL_FORM.test(rawTranscript)) {
+  if (finalPhraseIndex(rawTranscript, HOST_FINAL_PHRASE) === null && HOST_LITERAL_FORM.test(rawTranscript)) {
     logOverride('dsh-talk heal: model answered trigger true, but the literal trigger phrase is not at the end of the transcript; overridden to trigger false')
     return { trigger: false, prompt: rawTranscript, source: 'model' }
   }
-  return { trigger: true, prompt: stripFinalPhrase(model.prompt), source: 'model' }
+  return { trigger: true, prompt: stripPhrases(model.prompt), source: 'model' }
 }
 
-/** The prompt without a literal form that still ends it, and without the punctuation after it. */
-function stripFinalPhrase(prompt: string): string {
-  return prompt.replace(HOST_FINAL_LITERAL_FORM, '').trim()
+/**
+ * The prompt with every literal form removed, wherever the model left it. The ticket's
+ * criterion is that the phrase never appears in what is sent, so a form in the middle goes
+ * too, not only one at the end.
+ */
+function stripPhrases(prompt: string): string {
+  return prompt.replace(HOST_ANY_PHRASE, ' ').replace(/\s+/gu, ' ').trim()
 }
 
 /**
@@ -153,9 +186,9 @@ function stripFinalPhrase(prompt: string): string {
  * before it, whitespace collapsed. Otherwise return `null`, and the caller throws.
  */
 function promptBeforeFinalPhrase(rawTranscript: string): string | null {
-  const match = FINAL_LITERAL_PHRASE.exec(rawTranscript)
-  if (match === null) return null
-  return rawTranscript.slice(0, match.index).replace(/\s+/gu, ' ').trim()
+  const index = finalPhraseIndex(rawTranscript, FALLBACK_FINAL_PHRASE)
+  if (index === null) return null
+  return rawTranscript.slice(0, index).replace(/\s+/gu, ' ').trim()
 }
 
 /** One POST to the model endpoint. Throws `HealFailure` on any failure; never retries. */

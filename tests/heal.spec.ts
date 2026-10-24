@@ -269,10 +269,12 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
     ['no apostrophe (not one of the two literal forms)', 'read the config thats my prompt'],
     ['prompted (word boundary)', 'read the config that is my prompted'],
     ['no phrase at all', 'read the config'],
-    ['two trailing marks after the phrase', 'read the config that is my prompt..'],
+    ['real words after the phrase', 'read the config that is my prompt now explain the vad'],
+    ['a variant spelling', 'read the config that is my promt'],
   ])('a fallback miss (%s) keeps the capture open by throwing HealFailure', async (_label, raw) => {
-    // Breaks if: the fallback matches a substring such as "prompt" or "promt", accepts a second
-    // trailing mark, or a miss returns a prompt instead of throwing.
+    // Breaks if: the fallback matches a substring such as "prompt" or "promt", accepts speech
+    // after the phrase, or a miss returns a prompt instead of throwing. Trailing punctuation is
+    // not a miss: a recogniser adds it, so "prompt.." fires and is covered in its own test.
     await expect(heal(raw, await closedEndpoint())).rejects.toBeInstanceOf(HealFailure)
   })
 
@@ -373,4 +375,57 @@ describe('byte identity with HEAL-PROMPT.md', () => {
       expect(Buffer.from(block, 'utf8').equals(Buffer.from(HEAL_SYSTEM_PROMPT, 'utf8'))).toBe(true)
     },
   )
+})
+
+describe('trailing punctuation and filler after the phrase', () => {
+  // A recogniser appends punctuation and the model's own prompt tells it to drop filler, so a
+  // phrase followed by a comma or by "uh" still ends the utterance. Treating it as mid-text
+  // refuses a real trigger silently: the capture then waits for the 120 s trip and closes unsent.
+  it.each([
+    ['a comma', 'write a haiku that is my prompt,'],
+    ['a filler word', 'write a haiku that is my prompt uh'],
+    ['filler and a full stop', 'write a haiku that is my prompt uh.'],
+    ['a comma and filler', 'write a haiku that is my prompt, uh'],
+  ])('does not veto a trigger followed by %s', async (_label, raw) => {
+    const stub = await startStub()
+    stub.reply = answer(JSON.stringify({ trigger: true, prompt: 'write a haiku' }))
+    const overrides: string[] = []
+    const result = await healTranscript(raw, { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: (m) => overrides.push(m) })
+    expect(result).toEqual({ trigger: true, prompt: 'write a haiku', source: 'model' })
+    expect(overrides).toEqual([])
+  })
+
+  it.each([
+    ['a comma', 'read the config that is my prompt,'],
+    ['a filler word', 'read the config that is my prompt uh'],
+  ])('the fallback still fires on a phrase followed by %s', async (_label, raw) => {
+    const stub = await startStub()
+    stub.reply = answer('boom')
+    const result = await heal(raw, stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'read the config', source: 'fallback' })
+  })
+
+  it('still vetoes when real words follow the phrase', async () => {
+    // Breaks if: the noise tolerance is widened into accepting speech after the phrase.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "write a haiku"}')
+    const raw = 'that is my prompt now explain the vad'
+    const result = await healTranscript(raw, { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: () => undefined })
+    expect(result).toEqual({ trigger: false, prompt: raw, source: 'model' })
+  })
+
+  it('removes a phrase the model left inside its own prompt', async () => {
+    // Breaks if: only a trailing phrase is stripped, so the phrase can be sent inside the prompt.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "write a haiku that is my prompt about sockets"}')
+    const result = await heal('write a haiku about sockets that is my prompt', stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'write a haiku about sockets', source: 'model' })
+  })
+
+  it('fires on a phrase followed by two marks, as a recogniser may produce', async () => {
+    const stub = await startStub()
+    stub.reply = answer('boom')
+    const result = await heal('read the config that is my prompt..', stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'read the config', source: 'fallback' })
+  })
 })
