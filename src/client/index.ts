@@ -44,7 +44,7 @@ import type {
 export type { TalkMicInjected, TalkMicProps } from './TalkMicButton.tsx'
 export type { TalkSettingsTabInjected, TalkSettingsTabProps } from './TalkSettingsTab.tsx'
 export type { TalkLocaleKey } from './locales.ts'
-export { foldMic, initMic, clampRecordSeconds, type MicEvent, type MicPhase, type MicViewModel } from './present.ts'
+export { foldMic, initMic, type MicEvent, type MicPhase, type MicViewModel } from './present.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {

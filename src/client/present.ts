@@ -23,16 +23,16 @@ export interface MicViewModel {
 
 /** An event the recorder state can receive. */
 export type MicEvent =
-  | { kind: 'press'; maxSeconds?: number }
-  | { kind: 'tick'; elapsedSec: number; maxSeconds?: number }
+  | { kind: 'press' }
+  | { kind: 'tick'; elapsedSec: number }
   | { kind: 'stopped' }
   | { kind: 'transcribed'; text: string }
   | { kind: 'failed'; message: string }
   | { kind: 'reset' }
 
 /**
- * Fold one event into the view model. The cap is re-checked on every tick so
- * the caller only has to drive `tick` with the current elapsed seconds.
+ * Fold one event into the view model. The caller drives `tick` with the current
+ * elapsed seconds.
  *
  * @param state - prior view model.
  * @param event - the incoming event.
@@ -44,7 +44,7 @@ export function foldMic(state: MicViewModel, event: MicEvent): MicViewModel {
       return { phase: 'recording', elapsedSec: 0, lastText: state.lastText, error: undefined }
     case 'tick':
       return state.phase === 'recording'
-        ? { ...state, elapsedSec: event.maxSeconds === undefined ? event.elapsedSec : Math.min(event.elapsedSec, event.maxSeconds) }
+        ? { ...state, elapsedSec: event.elapsedSec }
         : state
     case 'stopped':
       return { ...state, phase: 'transcribing' }
@@ -164,10 +164,4 @@ export function turnCancellable(input: TurnGuardInput): boolean {
     !input.pendingInteraction &&
     input.openTurn
   )
-}
-
-/** Recording-cap seconds, clamped to a safe range for display. */
-export function clampRecordSeconds(value: number, fallback: number): number {
-  if (!Number.isFinite(value) || value <= 0) return fallback
-  return Math.min(Math.floor(value), 600)
 }

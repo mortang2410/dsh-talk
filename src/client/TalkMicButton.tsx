@@ -1,8 +1,9 @@
 /**
  * The composer microphone button: when the host resolved the `web` STT engine,
  * transcribe with the browser's Web Speech API (interim results included);
- * otherwise record with MediaRecorder, convert the recording to 16 kHz mono WAV
- * (wav.ts), and send it through the host's `talk/transcribe` to the local engine.
+ * otherwise record speech segments with MediaRecorder (voice-activity detection is
+ * always on), convert each segment to 16 kHz mono WAV (wav.ts), and send it through
+ * the host's `talk/transcribe` to the local engine.
  * Either way the result fills the draft (or sends directly when auto-submit is
  * on), and play each new utterance of
  * this session by polling `talk/latest` (browser voice for the browser engine,
@@ -557,16 +558,10 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   /** When the current reply started (ms, Date.now). The listener ignores the onset window after it. */
   const playStartedAtRef = useRef(0)
 
-  const recorderRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const startedRef = useRef<number>(0)
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const captureRef = useRef<SegmentedCapture | null>(null)
-  /** The legacy single recording's microphone stream, released on unmount. */
-  const legacyStreamRef = useRef<MediaStream | null>(null)
   /** False once this button unmounted: no late transcript or answer may reach the composer. */
   const liveRef = useRef(true)
   const micRef = useRef(mic)
@@ -598,49 +593,17 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
   }
 
-  // Convert one MediaRecorder recording to 16 kHz mono WAV in the browser, post
-  // it to the host engine, and name the failing stage in the composer.
-  const transcribeRecording = async (blob: Blob): Promise<void> => {
-    let wav: Uint8Array
-    try {
-      wav = await recordingToWav16kMono(await blob.arrayBuffer())
-    } catch (error) {
-      setMic(foldMic(micRef.current, { kind: 'failed', message: `could not convert the recording to 16 kHz WAV: ${detailOf(error)}` }))
-      return
-    }
-    try {
-      const transcript = await transcribe(bytesToBase64(wav))
-      finishWithText(transcript.text)
-    } catch (error) {
-      setMic(foldMic(micRef.current, { kind: 'failed', message: `transcription failed: ${detailOf(error)}` }))
-    }
-  }
-
   const stopRecognition = (): void => {
     recognitionRef.current?.stop()
     recognitionRef.current = null
   }
 
-  const stopRecorder = (): void => {
-    const recorder = recorderRef.current
-    recorderRef.current = null
-    if (recorder !== null && recorder.state !== 'inactive') {
-      try {
-        recorder.stop()
-      } catch {
-        // The recorder already stopped; the dataavailable handler finished us.
-      }
-    }
-  }
-
-  // Feature-detected voice-activity detection: attach an AnalyserNode to the
-  // live stream when the recorder path is used. When it is present, the capture
-  // is segmented (startSegmentedCapture). Absent AudioContext means one recording
-  // that the user stops by hand.
-  const setupVad = (stream: MediaStream, vad: TalkStatus['record']['vad']): void => {
-    if (!vad.enabled) return
+  // Voice-activity detection (VAD) is always on: attach an AnalyserNode to the live
+  // stream. Returns false when the browser has no AudioContext or the attach fails;
+  // the caller then refuses to record.
+  const setupVad = (stream: MediaStream): boolean => {
     const Ctor = (globalThis as unknown as { AudioContext?: typeof AudioContext }).AudioContext
-    if (Ctor === undefined) return
+    if (Ctor === undefined) return false
     try {
       const context = new Ctor()
       const source = context.createMediaStreamSource(stream)
@@ -649,8 +612,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       source.connect(analyser)
       audioContextRef.current = context
       analyserRef.current = analyser
+      return true
     } catch {
-      // VAD degrades to one recording, stopped by hand.
+      return false
     }
   }
 
@@ -887,13 +851,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       return
     }
     setRecording(false)
-    if (timerRef.current !== null) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
     if (recognitionRef.current !== null) stopRecognition()
-    else stopRecorder()
-    teardownVad()
     setMic(foldMic(micRef.current, { kind: 'stopped' }))
   }
 
@@ -979,7 +937,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   const listenWanted = (): boolean =>
     liveRef.current
     && playingRef.current
-    && settingsRef.current?.record.vad.enabled === true
     && !listenUnavailableRef.current
     && navigator.mediaDevices !== undefined
 
@@ -1154,7 +1111,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
         setMic(foldMic(micRef.current, { kind: 'failed', message: 'web speech recognition unavailable' }))
         return
       }
-      setMic(foldMic(micRef.current, { kind: 'press', maxSeconds: snapshot.record.maxSeconds }))
+      setMic(foldMic(micRef.current, { kind: 'press' }))
       setRecording(true)
       return
     }
@@ -1175,50 +1132,16 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       stream.getTracks().forEach(track => track.stop())
       return
     }
-    setupVad(stream, snapshot.record.vad)
-    if (analyserRef.current !== null) {
-      startSegmentedCapture(stream, mime, snapshot.record)
-      return
-    }
-    let recorder: MediaRecorder
-    try {
-      recorder = new MediaRecorder(stream, { mimeType: mime })
-    } catch {
+    if (!setupVad(stream)) {
       stream.getTracks().forEach(track => track.stop())
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone capture failed' }))
+      setMic(foldMic(micRef.current, { kind: 'failed', message: 'voice-activity detection is unavailable in this browser' }))
       return
     }
-    chunksRef.current = []
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunksRef.current.push(event.data)
-    }
-    recorder.onstop = () => {
-      stream.getTracks().forEach(track => track.stop())
-      const blob = new Blob(chunksRef.current, { type: mime })
-      chunksRef.current = []
-      void transcribeRecording(blob)
-    }
-    recorderRef.current = recorder
-    legacyStreamRef.current = stream
-    try {
-      recorder.start()
-    } catch {
-      recorderRef.current = null
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone capture failed' }))
-      return
-    }
-    startedRef.current = Date.now()
-    setMic(foldMic(micRef.current, { kind: 'press', maxSeconds: snapshot.record.maxSeconds }))
-    setRecording(true)
-    timerRef.current = setInterval(() => {
-      const elapsed = Math.ceil((Date.now() - startedRef.current) / 1000)
-      setMic(foldMic(micRef.current, { kind: 'tick', elapsedSec: elapsed, maxSeconds: settingsRef.current?.record.maxSeconds ?? 60 }))
-      if (elapsed >= (settingsRef.current?.record.maxSeconds ?? 60)) stop()
-    }, 500)
+    startSegmentedCapture(stream, mime, snapshot.record)
   }
 
-  // Unmount: stop the detector interval, the segment recorder and the legacy recorder, release
-  // every microphone track, and mark the capture abandoned. The submit path reads the same live
+  // Unmount: stop the detector interval and the segment recorder, release every
+  // microphone track, and mark the capture abandoned. The submit path reads the same live
   // capture object this cleanup mutates, so a heal answer that arrives later is dropped.
   useEffect(() => {
     liveRef.current = true
@@ -1244,18 +1167,11 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
           }
         }
       }
-      if (timerRef.current !== null) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-      stopRecorder()
       releaseListener()
       if (armTimerRef.current !== null) {
         clearTimeout(armTimerRef.current)
         armTimerRef.current = null
       }
-      legacyStreamRef.current?.getTracks().forEach(track => track.stop())
-      legacyStreamRef.current = null
       if (recognitionRef.current !== null) {
         try {
           recognitionRef.current.abort()

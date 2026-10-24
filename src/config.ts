@@ -15,12 +15,6 @@ export type SttEngine = 'auto' | 'web' | 'funasr' | 'whisper'
 /** Text-to-speech engines. `auto` prefers piper, then edge-tts, then the browser voice. */
 export type TtsEngine = 'auto' | 'browser' | 'edge-tts' | 'piper'
 
-/** Default recording cap in seconds. */
-export const DEFAULT_MAX_RECORD_SECONDS = 60
-
-/** Ceiling for one legacy recording: the client holds the whole clip in memory. */
-export const MAX_RECORD_SECONDS = 600
-
 /** Default speak-tool text cap in characters. */
 export const DEFAULT_MAX_SPEAK_CHARS = 20_000
 
@@ -50,8 +44,8 @@ export const DEFAULT_VAD_ENERGY_THRESHOLD = 0.01
 
 /** Voice-activity detection for the recorder (silence auto-end). */
 export interface VadConfig {
-  /** Detect silence and auto-end the recording (default true; degrades when AudioContext is absent). */
-  enabled?: boolean
+  /** Must be true when set. Voice-activity detection is always on; false is rejected. */
+  enabled?: true
   /** Consecutive silence in milliseconds before the recording auto-ends (default 1500). */
   silenceMs?: number
   /** RMS energy floor (0..1) above which audio counts as speech (default 0.01). */
@@ -64,13 +58,6 @@ export interface RecordConfig {
   enabled?: boolean
   /** Optional toggle hotkey such as "alt+r"; unset = click only. */
   hotkey?: string | null
-  /**
-   * Recording cap in seconds (default 60). It governs only the legacy single recording
-   * (voice-activity detection off, or no AudioContext), which stops at this cap. A
-   * segmented capture (voice-activity detection on) has no cap: it ends on a stop click,
-   * or after 120 seconds of silence once a segment has been captured.
-   */
-  maxSeconds?: number
   /** Submit the transcription as the user message automatically (default false). */
   autoSubmit?: boolean
   /** Voice-activity detection (silence auto-end). */
@@ -185,12 +172,8 @@ export interface ResolvedConfig {
   recordEnabled: boolean
   /** Toggle hotkey, or null for click-only. */
   recordHotkey: string | null
-  /** Recording cap in seconds for the legacy single recording. */
-  recordMaxSeconds: number
   /** Submit transcriptions automatically. */
   recordAutoSubmit: boolean
-  /** Whether silence auto-end (VAD) is enabled. */
-  vadEnabled: boolean
   /** Consecutive silence before the recording auto-ends (ms). */
   vadSilenceMs: number
   /** RMS energy floor above which audio counts as speech (0..1). */
@@ -262,10 +245,9 @@ export const Config: z<Config> = z.object({
   record: z.object({
     enabled: z.boolean().default(true),
     hotkey: z.union([z.string(), z.const(null)]).default(null),
-    maxSeconds: z.number().min(1).max(MAX_RECORD_SECONDS).default(DEFAULT_MAX_RECORD_SECONDS),
     autoSubmit: z.boolean().default(false),
     vad: z.object({
-      enabled: z.boolean().default(true),
+      enabled: z.const(true).default(true),
       silenceMs: z.number().min(200).max(MAX_VAD_SILENCE_MS).default(DEFAULT_VAD_SILENCE_MS),
       energyThreshold: z.number().min(0).max(1).default(DEFAULT_VAD_ENERGY_THRESHOLD),
     }),
@@ -388,10 +370,11 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
   if (recordHotkey !== null && recordHotkey.length > 40) {
     throw new Error('dsh-talk: config.record.hotkey must be at most 40 characters')
   }
-  const recordMaxSeconds = numberOf(record.maxSeconds, DEFAULT_MAX_RECORD_SECONDS, 1, MAX_RECORD_SECONDS, 'record.maxSeconds')
   const recordAutoSubmit = booleanOf(record.autoSubmit, false, 'record.autoSubmit')
 
-  const vadEnabled = booleanOf(record.vad?.enabled, true, 'record.vad.enabled')
+  if (booleanOf(record.vad?.enabled, true, 'record.vad.enabled') === false) {
+    throw new Error('dsh-talk: config.record.vad.enabled cannot be false: voice-activity detection is always on')
+  }
   const vadSilenceMs = numberOf(record.vad?.silenceMs, DEFAULT_VAD_SILENCE_MS, 200, MAX_VAD_SILENCE_MS, 'record.vad.silenceMs')
   const vadEnergyThreshold = numberOf(record.vad?.energyThreshold, DEFAULT_VAD_ENERGY_THRESHOLD, 0, 1, 'record.vad.energyThreshold')
 
@@ -463,9 +446,7 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
   return Object.freeze({
     recordEnabled,
     recordHotkey,
-    recordMaxSeconds,
     recordAutoSubmit,
-    vadEnabled,
     vadSilenceMs,
     vadEnergyThreshold,
     sttEngine: sttEngineRaw,

@@ -35,7 +35,7 @@ const SETTINGS: TalkStatus = {
     browser: { voiceName: null, rate: 1, pitch: 1 },
   },
   announce: { enabled: false, onTurnEnd: false, onApproval: false, onError: false },
-  record: { enabled: true, hotkey: null, maxSeconds: 60, autoSubmit: false, vad: { enabled: true, silenceMs: 1000, energyThreshold: 0.01 } },
+  record: { enabled: true, hotkey: null, autoSubmit: false, vad: { silenceMs: 1000, energyThreshold: 0.01 } },
   interrupt: false,
   patchFile: null,
 }
@@ -65,6 +65,8 @@ let openHealGate: () => void = () => {}
 let micLevel = 0
 /** What the host's model call does: answer like the model, or fail (the host fallback then decides). */
 let healMode: 'model' | 'error' = 'model'
+/** When true, the stubbed decoder rejects every recording, so the WAV conversion fails. */
+let decodeFails = false
 /** Text the button wrote into the composer draft. */
 const drafts: string[] = []
 /** Texts the button submitted. */
@@ -146,6 +148,7 @@ class FakeAudioContext {
 
 class FakeOfflineAudioContext {
   decodeAudioData(_data: ArrayBuffer): Promise<{ numberOfChannels: number; getChannelData: (channel: number) => Float32Array }> {
+    if (decodeFails) return Promise.reject(new Error('EncodingError: Unable to decode audio data'))
     return Promise.resolve({ numberOfChannels: 1, getChannelData: () => new Float32Array(1600) })
   }
 }
@@ -199,9 +202,6 @@ function expectHostOnlyFetches(): void {
 
 let container: HTMLElement
 let root: Root | undefined
-
-/** The legacy single recording: voice-activity detection off, so no AnalyserNode and no segments. */
-const LEGACY_SETTINGS: TalkStatus = { ...SETTINGS, record: { ...SETTINGS.record, vad: { ...SETTINGS.record.vad, enabled: false } } }
 
 function mount(settings: TalkStatus = SETTINGS): void {
   const props = {
@@ -296,6 +296,7 @@ beforeEach(() => {
   micLevel = 0
   healMode = 'model'
   transcribeFailures = 0
+  decodeFails = false
   asyncStops = false
   trackStops = 0
   healGate = null
@@ -474,7 +475,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     ])
   })
 
-  it('a segmented capture outlives record.maxSeconds and keeps running after the trigger', async () => {
+  it('a segmented capture is not cut off at a fixed length and keeps running after the trigger', async () => {
     transcriptQueue = ['first sentence', 'second sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
@@ -487,18 +488,6 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(sent).toEqual(['first sentence second sentence'])
     expect(recording()).toBe(true)
     expect(drafts).toEqual([])
-  })
-
-  it('the legacy single recording (voice-activity detection off) still stops at record.maxSeconds', async () => {
-    transcriptQueue = ['legacy recording']
-    await mountAndSettle(LEGACY_SETTINGS)
-    await startCapture()
-    await advance(59_000)
-    expect(recording()).toBe(true)
-    await advance(2000)
-    expect(recording()).toBe(false)
-    expect(drafts).toEqual(['legacy recording'])
-    expect(healCalls).toEqual([])
   })
 
   it('sends the accumulated transcript to the host heal route, and the browser never fetches the heal endpoint', async () => {
@@ -631,6 +620,41 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await flush()
     await flush()
     expect(drafts).toEqual(['first part second part'])
+  })
+
+  it('a conversion failure shows the error in the composer and keeps the capture open', async () => {
+    decodeFails = true
+    transcriptQueue = ['never transcribed']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(errorText()).toBe('could not convert the recording to 16 kHz WAV: EncodingError: Unable to decode audio data')
+    expect(recording()).toBe(true)
+    expect(events.filter(event => event.startsWith('segment:'))).toEqual([])
+  })
+
+  it('refuses to record and shows an error when the browser has no AudioContext', async () => {
+    vi.stubGlobal('AudioContext', undefined)
+    await mountAndSettle()
+    await startCapture()
+    expect(errorText()).toBe('voice-activity detection is unavailable in this browser')
+    expect(recording()).toBe(false)
+    expect(recorders).toEqual([])
+    expect(trackStops).toBe(1)
+  })
+
+  it('refuses to record and shows an error when the AudioContext cannot attach the microphone', async () => {
+    vi.stubGlobal('AudioContext', class {
+      createMediaStreamSource(): never {
+        throw new Error('no source node')
+      }
+    })
+    await mountAndSettle()
+    await startCapture()
+    expect(errorText()).toBe('voice-activity detection is unavailable in this browser')
+    expect(recorders).toEqual([])
+    expect(trackStops).toBe(1)
   })
 
   it('a transcription failure keeps the capture open, shows the error, and later words still reach the draft', async () => {

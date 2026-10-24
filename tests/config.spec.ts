@@ -7,8 +7,11 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { Config, resolveConfig, MAX_RECORD_SECONDS } from '../src/config.ts'
+import { Config, resolveConfig } from '../src/config.ts'
 import { resolveSttEngine, resolveTtsEngine } from '../src/service.ts'
+
+/** A config that turns voice-activity detection off. The type forbids it, so the test casts it in on purpose. */
+const VAD_OFF = { record: { vad: { enabled: false } } } as unknown as Config
 
 describe('Config schema', () => {
   it('fills every leaf default on an empty input', () => {
@@ -39,13 +42,8 @@ describe('Config schema', () => {
     expect(normalized.stt.interim).toBe(true)
   })
 
-  it('rejects a recording cap above the ceiling', () => {
-    expect(() => Config({ record: { maxSeconds: MAX_RECORD_SECONDS + 1 } })).toThrow()
-  })
-
-  it('defaults the legacy recording cap to 60 seconds', () => {
-    const normalized = Config({}) as { record: { maxSeconds: number } }
-    expect(normalized.record.maxSeconds).toBe(60)
+  it('rejects turning voice-activity detection off', () => {
+    expect(() => Config(VAD_OFF)).toThrow()
   })
 
   it('rejects an unknown STT engine', () => {
@@ -81,10 +79,13 @@ describe('resolveConfig', () => {
 
   it('resolves the VAD defaults and rejects an out-of-range silence window', () => {
     const resolved = resolveConfig({})
-    expect(resolved.vadEnabled).toBe(true)
     expect(resolved.vadSilenceMs).toBe(1_500)
     expect(resolved.vadEnergyThreshold).toBe(0.01)
     expect(() => resolveConfig({ record: { vad: { silenceMs: 10 } } })).toThrow(/silenceMs/u)
+  })
+
+  it('refuses to turn voice-activity detection off', () => {
+    expect(() => resolveConfig(VAD_OFF)).toThrow(/always on/u)
   })
 })
 
