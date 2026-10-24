@@ -21,6 +21,7 @@ export type TalkLocaleKey =
   | 'announceOnApproval'
   | 'announceOnError'
   | 'interrupt'
+  | 'stop'
   | 'save'
   | 'saved'
   | 'saveFailed'
@@ -41,6 +42,7 @@ export const en: Record<TalkLocaleKey, string> = {
   announceOnApproval: 'Announce pending approvals',
   announceOnError: 'Announce errors',
   interrupt: 'Talking stops playback',
+  stop: 'Stop playback, or cancel the running turn',
   save: 'Save settings',
   saved: 'Settings appended to the profile patch; reload to apply.',
   saveFailed: 'Could not save settings',
@@ -62,6 +64,7 @@ export const zh: Record<TalkLocaleKey, string> = {
   announceOnApproval: '待审批时播报',
   announceOnError: '出错时播报',
   interrupt: '开始说话即停止播放',
+  stop: '停止播放，或取消正在运行的回合',
   save: '保存设置',
   saved: '设置已追加到 profile patch，重载后生效。',
   saveFailed: '设置保存失败',

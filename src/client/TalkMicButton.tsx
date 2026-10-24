@@ -65,6 +65,8 @@ export interface TalkMicInjected {
    * service (the same call the built-in stop button makes). Preserves the queue.
    */
   cancelTurn?: (sessionId: string) => Promise<void>
+  /** The stop control's localized `title` and `aria-label`, resolved by the plugin's locale dictionary. */
+  stopLabel?: string
 }
 
 /** How one playing reply is stopped. `begin` registers it; the returned function ends it. */
@@ -429,6 +431,7 @@ function playAudioEntry(
       finish()
     }
     // The chain's bound released this playback: stop it so it cannot overlap the next reply.
+    // Intended: a bound release pauses audio still playing, so the next reply never overlaps it.
     onRelease(stopNow)
     player.addEventListener('ended', finish)
     player.addEventListener('error', finish)
@@ -448,7 +451,7 @@ function playAudioEntry(
  * @returns the button element.
  */
 export function TalkMicButton(props: TalkMicProps): ReactNode {
-  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn } = props
+  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel = '' } = props
   const inputActions = (props as Partial<Record<'inputActions', RuntimeInputActions>>).inputActions
   const sessionIdProp = (props as Partial<Record<'sessionId', unknown>>).sessionId
   const writeDraft = (text: string): void => {
@@ -491,6 +494,15 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   /** The reply currently audible, or null. Cleared on every path that ends playback. */
   const playbackRef = useRef<{ stop: () => void } | null>(null)
   const cancellingRef = useRef(false)
+  /**
+   * The barge-in listener: the microphone and its analyser while a reply is audible and no capture
+   * runs. Set by openListener, cleared by detachListener (hand-over) or releaseListener (release).
+   */
+  const listenRef = useRef<{ stream: MediaStream; context: AudioContext; analyser: AnalyserNode; timer: ReturnType<typeof setInterval> | null } | null>(null)
+  /** True while the listener's getUserMedia request is open, so a second request is never started. */
+  const listenPendingRef = useRef(false)
+  /** Set once on a denied or failed microphone request. Barge-in then stays off for this mount. */
+  const listenUnavailableRef = useRef(false)
 
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -612,6 +624,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   const finalizeCapture = (capture: SegmentedCapture): void => {
     capture.stream.getTracks().forEach(track => track.stop())
     if (captureRef.current === capture) captureRef.current = null
+    syncListening()
     if (capture.done || capture.abandoned) return
     const text = capture.accumulated.trim()
     if (text === '') {
@@ -835,11 +848,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     playingRef.current = true
     armedRef.current = false
     setPlaying(true)
+    syncListening()
     return () => {
       if (playbackRef.current !== handle) return
       playbackRef.current = null
       playingRef.current = false
       setPlaying(false)
+      syncListening()
     }
   }
 
@@ -851,9 +866,11 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     playingRef.current = false
     setPlaying(false)
     handle.stop()
+    syncListening()
   }
 
   // Cancel this session's running turn through the scoped conversation service.
+  // Limit: a pending approval does not stop this cancel; it matches the built-in Escape stop, which also skips sessions with a pending interaction.
   const cancelTurnNow = async (): Promise<void> => {
     if (cancelTurn === undefined || typeof sessionIdProp !== 'string' || sessionIdProp === '') return
     if (cancellingRef.current) return
@@ -880,6 +897,95 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     armedRef.current = plan.armed
     if (plan.action === 'stop-playback') stopPlayback()
     else if (plan.action === 'cancel-turn') void cancelTurnNow()
+  }
+
+  // Take the listener's stream off the listener without stopping its tracks: a capture takes it over.
+  const detachListener = (): MediaStream | null => {
+    const listener = listenRef.current
+    if (listener === null) return null
+    listenRef.current = null
+    if (listener.timer !== null) clearInterval(listener.timer)
+    try {
+      void Promise.resolve(listener.context.close()).catch(() => {})
+    } catch {
+      // The context already closed.
+    }
+    return listener.stream
+  }
+
+  const releaseListener = (): void => {
+    detachListener()?.getTracks().forEach(track => track.stop())
+  }
+
+  // Whether the barge-in listener may hold the microphone right now.
+  const listenWanted = (): boolean =>
+    liveRef.current
+    && playingRef.current
+    && captureRef.current === null
+    && settingsRef.current?.record.vad.enabled === true
+    && !listenUnavailableRef.current
+    && navigator.mediaDevices !== undefined
+
+  // One barge-in tick: speech in the listener's analyser while audio is audible stops it.
+  const listenTick = (): void => {
+    const listener = listenRef.current
+    if (listener === null || !playingRef.current) return
+    const buffer = new Float32Array(listener.analyser.fftSize)
+    listener.analyser.getFloatTimeDomainData(buffer)
+    if (isSpeechFrame(rmsOf(buffer), settingsRef.current?.record.vad.energyThreshold ?? 0.01)) bargeIn()
+  }
+
+  const openListener = (stream: MediaStream): void => {
+    const Ctor = (globalThis as unknown as { AudioContext?: typeof AudioContext }).AudioContext
+    if (Ctor === undefined) {
+      stream.getTracks().forEach(track => track.stop())
+      listenUnavailableRef.current = true
+      console.warn('[dsh-talk] barge-in unavailable: AudioContext is missing')
+      return
+    }
+    try {
+      const context = new Ctor()
+      const source = context.createMediaStreamSource(stream)
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 2048
+      source.connect(analyser)
+      listenRef.current = { stream, context, analyser, timer: setInterval(listenTick, TICK_MS) }
+    } catch {
+      stream.getTracks().forEach(track => track.stop())
+    }
+  }
+
+  // The privacy contract: the microphone is live only while a reply is audible or a capture is running, and is released otherwise.
+  // A listen request still pending when a press starts opens a second stream for the press's capture; the pending stream is stopped on arrival.
+  const syncListening = (): void => {
+    if (!listenWanted()) {
+      releaseListener()
+      return
+    }
+    if (listenRef.current !== null || listenPendingRef.current) return
+    listenPendingRef.current = true
+    let request: Promise<MediaStream>
+    try {
+      request = navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (error) {
+      request = Promise.reject(error)
+    }
+    void request.then(
+      (stream) => {
+        listenPendingRef.current = false
+        if (!listenWanted() || listenRef.current !== null) {
+          stream.getTracks().forEach(track => track.stop())
+          return
+        }
+        openListener(stream)
+      },
+      () => {
+        listenPendingRef.current = false
+        if (listenUnavailableRef.current) return
+        listenUnavailableRef.current = true
+        console.warn('[dsh-talk] barge-in unavailable: microphone not granted')
+      },
+    )
   }
 
   const start = async (): Promise<void> => {
@@ -976,11 +1082,17 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       return
     }
     let stream: MediaStream
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone permission denied' }))
-      return
+    // A barge-in listener already holds the microphone: the capture takes its stream, so the microphone is never opened twice.
+    const handedOver = detachListener()
+    if (handedOver !== null) {
+      stream = handedOver
+    } else {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      } catch {
+        setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone permission denied' }))
+        return
+      }
     }
     // The button unmounted while the permission prompt was open: release the microphone at once.
     if (!liveRef.current) {
@@ -1061,6 +1173,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
         timerRef.current = null
       }
       stopRecorder()
+      releaseListener()
       legacyStreamRef.current?.getTracks().forEach(track => track.stop())
       legacyStreamRef.current = null
       if (recognitionRef.current !== null) {
@@ -1163,8 +1276,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
             data-dsh-talk-stop
             data-playing={playing ? 'true' : 'false'}
             data-turn-running={turnRunning ? 'true' : 'false'}
-            aria-label="stop"
-            title="stop"
+            aria-label={stopLabel}
+            title={stopLabel}
             onClick={onStopPress}
           >
             ■

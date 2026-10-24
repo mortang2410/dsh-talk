@@ -145,6 +145,8 @@ export async function apply(ctx: Context): Promise<void> {
     // binding reports running and its conversation publishes an open turn: the same
     // two reads the built-in Escape stop makes. Absent services mean no turn is ever
     // reported running, so the turn stage stays off.
+    // Limit: the watch reads the binding once, when subscribed. A session binding replaced while
+    // this button stays mounted is not followed until the sessionId prop changes.
     const uiConversation = scope.get('uiConversation') as unknown as UiConversationFace | undefined
     const watchTurn: NonNullable<TalkMicInjected['watchTurn']> = (id, listener) => {
       if (typeof id !== 'string' || uiConversation === undefined || sessions?.binding === undefined) return () => {}
@@ -184,7 +186,7 @@ export async function apply(ctx: Context): Promise<void> {
       name: 'conversation.input.left',
       id: 'talk-mic',
       order: 20,
-      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn }),
+      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel: t('stop') }),
     }, TalkMicButton))
 
     slots.inject('settings.plugins.tab', () => slots.register({
