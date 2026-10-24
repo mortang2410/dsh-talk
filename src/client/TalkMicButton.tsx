@@ -578,7 +578,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     const text = raw.trim()
     if (text === '') return
     capture.accumulated = capture.accumulated === '' ? text : `${capture.accumulated} ${text}`
-    capture.idleMs = 0
     let decision: Awaited<ReturnType<typeof healTranscript>>
     try {
       decision = await healTranscript(capture.accumulated)
