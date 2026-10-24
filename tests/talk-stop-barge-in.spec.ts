@@ -601,6 +601,33 @@ describe('barge-in while a reply is audible', () => {
     expect(micStreams[0]?.stopped).toBe(0)
   })
 
+  it('a reply starting while the capture waits for permission leaves one microphone open, not two', async () => {
+    // The mirror of the test above: here the CAPTURE's request is the held one. A reply starts
+    // while that request is pending, so the listener opens its own stream. When the capture's
+    // permission arrives, syncListening() (TalkMicButton.tsx:862) releases the listener's stream
+    // and reopens on the capture's, so exactly one microphone stays live. Without that call both
+    // stay open until the reply ends.
+    mount()
+    await advance(0)
+    micDeferred = true
+    await pressMic()
+    await advance(0)
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+
+    // Playback begins during the permission wait: the listener asks for its own microphone, and
+    // that request resolves at once because micDeferred is one-shot.
+    await publish('u1')
+    await advance(0)
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(micStreams[0]?.stopped).toBe(0)
+
+    // The capture's permission arrives now.
+    const capture = await resolveDeferredMic()
+    expect(micStreams[0]?.stopped).toBe(1)
+    expect(capture.stopped).toBe(0)
+    expect(micStreams.filter((stream) => stream.stopped === 0)).toHaveLength(1)
+  })
+
   it('the stop control carries the localized label as title and aria-label', async () => {
     mount()
     await advance(0)
