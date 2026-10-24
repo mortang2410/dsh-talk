@@ -3,8 +3,9 @@
  * Barge-in while a reply is audible. The microphone is acquired when a reply starts,
  * released when it ends by any route, and never held while idle. A capture takes over the
  * listener's stream. Speech reaches the stop through the real component: the listener tick
- * (the reply's own microphone) and the capture's segment tick. The microphone, audio
- * context and recorder are stubbed; the tests drive the analyser level directly.
+ * (the reply's own microphone, which needs sustained speech after an onset window) and the
+ * capture's segment tick (one speech frame, as before). The microphone, audio context and
+ * recorder are stubbed; each analyser read consumes the next value of a frame queue.
  *
  * @module dsh-talk/test/talk-stop-barge-in.spec
  */
@@ -14,11 +15,18 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
 import { SPEECH_POLL_MS } from '../src/client/speechPoll.ts'
+import {
+  advanceSpeechRun,
+  LISTENER_CONSECUTIVE_FRAMES,
+  LISTENER_ONSET_MS,
+  LISTENER_TICK_MS,
+} from '../src/client/vad.ts'
 import type { TalkAudio, TalkLatest, TalkStatus } from '../src/wire.ts'
 
 const SESSION = 'session-barge-in-under-test'
 const LABEL = 'Stop playback, or cancel the running turn'
 const TICK_MS = 500
+const MIC_OPTIONS = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
 const SETTINGS: TalkStatus = {
   stt: { engine: 'whisper', resolved: 'whisper', language: 'en-US', silenceFinaliseMs: 1500, funasrUrl: null, whisperModel: null },
   tts: {
@@ -69,17 +77,24 @@ class FakeStream {
   }
 }
 
-/** The analyser reads a constant level: above the energy threshold is speech, zero is silence. */
-let level = 0
+/**
+ * The analyser's frame queue. Each analyser read consumes the next level: above the floor is speech,
+ * and an empty queue reads silence. A test controls exactly which frames arrive, and when.
+ */
+let frames: number[] = []
 let micDenied = false
 let micStreams: FakeStream[] = []
-const getUserMedia = vi.fn(async (): Promise<FakeStream> => {
+const getUserMedia = vi.fn(async (_constraints?: unknown): Promise<FakeStream> => {
   if (micDenied) throw new Error('NotAllowedError')
   const stream = new FakeStream()
   micStreams.push(stream)
   return stream
 })
 const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices')
+
+function nextLevel(): number {
+  return frames.length > 0 ? (frames.shift() ?? 0) : 0
+}
 
 class FakeContext {
   static instances: FakeContext[] = []
@@ -91,7 +106,7 @@ class FakeContext {
     return { connect() {} }
   }
   createAnalyser(): { fftSize: number; connect(target: unknown): void; getFloatTimeDomainData(buffer: Float32Array): void } {
-    return { fftSize: 0, connect() {}, getFloatTimeDomainData(buffer: Float32Array) { buffer.fill(level) } }
+    return { fftSize: 0, connect() {}, getFloatTimeDomainData(buffer: Float32Array) { buffer.fill(nextLevel()) } }
   }
   close(): Promise<void> {
     this.closed += 1
@@ -216,6 +231,25 @@ async function pressMic(): Promise<void> {
   })
 }
 
+/** A run of frames above the listener floor. */
+function speech(count: number): number[] {
+  return Array.from({ length: count }, () => 0.5)
+}
+
+describe('listener run (pure)', () => {
+  it('a speech frame extends the run and a quiet frame resets it to zero', () => {
+    expect(advanceSpeechRun(0, true)).toBe(1)
+    expect(advanceSpeechRun(2, true)).toBe(3)
+    expect(advanceSpeechRun(3, false)).toBe(0)
+  })
+
+  it('sustained speech takes several frames, one frame is never enough', () => {
+    expect(LISTENER_CONSECUTIVE_FRAMES).toBeGreaterThan(1)
+    expect(LISTENER_TICK_MS * LISTENER_CONSECUTIVE_FRAMES).toBeGreaterThanOrEqual(300)
+    expect(LISTENER_ONSET_MS).toBeGreaterThan(0)
+  })
+})
+
 describe('barge-in while a reply is audible', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -231,7 +265,7 @@ describe('barge-in while a reply is audible', () => {
     FakeRecorder.instances = []
     micStreams = []
     micDenied = false
-    level = 0
+    frames = []
     getUserMedia.mockClear()
     turn = { running: false, listeners: [], cancels: [] }
     remoteLatest = null
@@ -266,6 +300,21 @@ describe('barge-in while a reply is audible', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(1)
   })
 
+  it('requests the microphone with echo cancellation, noise suppression and gain control on', async () => {
+    mount()
+    await advance(0)
+    await publish('u1')
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: MIC_OPTIONS })
+  })
+
+  it('the capture microphone request carries the same three options', async () => {
+    mount()
+    await advance(0)
+    await pressMic()
+    await advance(0)
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: MIC_OPTIONS })
+  })
+
   it.each(['ended', 'error', 'abort'] as const)('releases the microphone when the reply ends by %s', async (event) => {
     mount()
     await advance(0)
@@ -279,33 +328,96 @@ describe('barge-in while a reply is audible', () => {
     expect(stopButton()).toBeNull()
   })
 
-  it('listener path: speech during an audible reply reaches the stop and releases the microphone', async () => {
+  it('one speech frame does not barge in, even a single frame well above the floor', async () => {
     mount()
     await advance(0)
     await publish('u1')
     await advance(0)
-    expect(micStreams.length).toBe(1)
+    frames = [0.5]
+    await advance(2000)
+    expect(FiringAudio.instances[0]?.pauses).toBe(0)
+    expect(micStreams[0]?.stopped).toBe(0)
+  })
 
-    level = 0.5
-    await advance(TICK_MS)
+  it('the required run of consecutive speech frames does barge in', async () => {
+    mount()
+    await advance(0)
+    await publish('u1')
+    await advance(0)
+    frames = speech(LISTENER_CONSECUTIVE_FRAMES)
+    await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS * LISTENER_CONSECUTIVE_FRAMES + LISTENER_TICK_MS)
     expect(FiringAudio.instances[0]?.pauses).toBe(1)
-    expect(turn.cancels).toEqual([])
     expect(micStreams[0]?.stopped).toBe(1)
   })
 
-  it('with a turn running, speech during the reply stops it and cancels the turn once', async () => {
+  it('one fewer than the required run does not barge in', async () => {
+    mount()
+    await advance(0)
+    await publish('u1')
+    await advance(0)
+    frames = speech(LISTENER_CONSECUTIVE_FRAMES - 1)
+    await advance(3000)
+    expect(FiringAudio.instances[0]?.pauses).toBe(0)
+  })
+
+  it('a quiet frame between speech frames resets the count', async () => {
+    mount()
+    await advance(0)
+    await publish('u1')
+    await advance(0)
+    // Two speech frames, one quiet, then three speech frames: no run of four, so no barge-in.
+    frames = [0.5, 0.5, 0, 0.5, 0.5, 0.5]
+    await advance(3000)
+    expect(FiringAudio.instances[0]?.pauses).toBe(0)
+    // A fresh run of four speech frames, with nothing carried over from before the quiet frame, does barge in.
+    frames = speech(LISTENER_CONSECUTIVE_FRAMES)
+    await advance(1000)
+    expect(FiringAudio.instances[0]?.pauses).toBe(1)
+  })
+
+  it('frames during the playback onset window are not read and do not barge in', async () => {
+    mount()
+    await advance(0)
+    await publish('u1')
+    await advance(0)
+    frames = speech(LISTENER_CONSECUTIVE_FRAMES)
+    await advance(LISTENER_ONSET_MS - LISTENER_TICK_MS)
+    expect(FiringAudio.instances[0]?.pauses).toBe(0)
+    expect(frames.length).toBe(LISTENER_CONSECUTIVE_FRAMES)
+  })
+
+  it('a new reply starts its count from zero, so one speech frame after a stop does not barge in', async () => {
+    mount()
+    await advance(0)
+    await publish('u1')
+    await advance(0)
+    // Three speech frames read at 500, 600 and 700 ms after reply one starts. Then the reply is stopped by
+    // hand at 700 ms, before any quiet frame could reset the count of three.
+    frames = [0.5, 0.5, 0.5]
+    await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS * 2)
+    pressStop()
+    expect(FiringAudio.instances[0]?.pauses).toBe(1)
+
+    // Reply two: a single speech frame after its onset must not complete a run carried over from reply one.
+    frames = [0.5]
+    await publish('u2')
+    await advance(0)
+    await advance(LISTENER_ONSET_MS + LISTENER_TICK_MS * 3)
+    expect(FiringAudio.instances[1]?.pauses).toBe(0)
+  })
+
+  it('with a turn running, sustained speech during the reply stops it and cancels the turn once', async () => {
     mount()
     await advance(0)
     setRunning(true)
     await publish('u1')
     await advance(0)
 
-    level = 0.5
-    await advance(TICK_MS)
+    frames = speech(20)
+    await advance(TICK_MS * 4)
     expect(FiringAudio.instances[0]?.pauses).toBe(1)
     expect(turn.cancels).toEqual([SESSION])
 
-    level = 0.5
     await advance(2000)
     expect(turn.cancels).toEqual([SESSION])
   })
@@ -314,7 +426,7 @@ describe('barge-in while a reply is audible', () => {
     mount()
     await advance(0)
     setRunning(true)
-    level = 0.5
+    frames = speech(20)
     await advance(2000)
     expect(getUserMedia).not.toHaveBeenCalled()
     expect(turn.cancels).toEqual([])
@@ -338,7 +450,7 @@ describe('barge-in while a reply is audible', () => {
     warn.mockRestore()
   })
 
-  it('capture path: the capture takes the listener stream, and speech through the segment tick stops the reply', async () => {
+  it('capture path: the capture takes the listener stream, and one speech frame through the segment tick stops the reply', async () => {
     mount()
     await advance(0)
     await publish('u1')
@@ -350,12 +462,13 @@ describe('barge-in while a reply is audible', () => {
     await advance(0)
     expect(getUserMedia).toHaveBeenCalledTimes(1)
 
-    level = 0.5
+    // The capture reads once per TICK_MS. One speech frame is enough on this path: the user is talking.
+    frames = [0.5]
     await advance(TICK_MS)
     expect(player?.pauses).toBe(1)
     expect(getUserMedia).toHaveBeenCalledTimes(1)
 
-    level = 0
+    frames = []
     await pressMic()
     await advance(0)
     expect(micStreams[0]?.stopped).toBe(1)

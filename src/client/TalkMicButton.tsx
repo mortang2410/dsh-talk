@@ -16,7 +16,18 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '../projection.ts'
 import { foldMic, initMic, planBargeIn, planStopPress, stopControlVisible, type MicViewModel } from './present.ts'
-import { advanceSilence, CAPTURE_SILENCE_TIMEOUT_MS, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
+import {
+  advanceSilence,
+  advanceSpeechRun,
+  CAPTURE_SILENCE_TIMEOUT_MS,
+  isSpeechFrame,
+  LISTENER_CONSECUTIVE_FRAMES,
+  LISTENER_ENERGY_MULTIPLIER,
+  LISTENER_ONSET_MS,
+  LISTENER_TICK_MS,
+  rmsOf,
+  silenceTrips,
+} from './vad.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import {
   CEILING_MS_PER_CHAR,
@@ -132,6 +143,14 @@ function detailOf(error: unknown): string {
  * utterance can be missing from its recording.
  */
 const TICK_MS = 500
+
+/**
+ * Microphone constraints for both the capture and the barge-in listener. The browser's echo
+ * cancellation removes most of the reply's own speaker output before the analyser reads it.
+ */
+const MIC_CONSTRAINTS: MediaStreamConstraints = {
+  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+}
 
 /**
  * One segmented capture, from the press until its final text is placed. The microphone
@@ -503,6 +522,10 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   const listenPendingRef = useRef(false)
   /** Set once on a denied or failed microphone request. Barge-in then stays off for this mount. */
   const listenUnavailableRef = useRef(false)
+  /** Consecutive listener frames above the listener floor. Reset on a quiet frame and on each playback start. */
+  const listenRunRef = useRef(0)
+  /** When the current reply started (ms, Date.now). The listener ignores the onset window after it. */
+  const playStartedAtRef = useRef(0)
 
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -847,6 +870,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     playbackRef.current = handle
     playingRef.current = true
     armedRef.current = false
+    // A new reply starts the listener's onset window and its consecutive-frame count from zero.
+    playStartedAtRef.current = Date.now()
+    listenRunRef.current = 0
     setPlaying(true)
     syncListening()
     return () => {
@@ -926,13 +952,20 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     && !listenUnavailableRef.current
     && navigator.mediaDevices !== undefined
 
-  // One barge-in tick: speech in the listener's analyser while audio is audible stops it.
+  // One listener tick. Barge-in needs LISTENER_CONSECUTIVE_FRAMES frames in a row above the
+  // listener floor, after the onset window. A silent frame or an onset-window tick resets the run.
   const listenTick = (): void => {
     const listener = listenRef.current
-    if (listener === null || !playingRef.current) return
+    if (listener === null) return
+    if (!playingRef.current || Date.now() - playStartedAtRef.current < LISTENER_ONSET_MS) {
+      listenRunRef.current = 0
+      return
+    }
     const buffer = new Float32Array(listener.analyser.fftSize)
     listener.analyser.getFloatTimeDomainData(buffer)
-    if (isSpeechFrame(rmsOf(buffer), settingsRef.current?.record.vad.energyThreshold ?? 0.01)) bargeIn()
+    const floor = (settingsRef.current?.record.vad.energyThreshold ?? 0.01) * LISTENER_ENERGY_MULTIPLIER
+    listenRunRef.current = advanceSpeechRun(listenRunRef.current, isSpeechFrame(rmsOf(buffer), floor))
+    if (listenRunRef.current >= LISTENER_CONSECUTIVE_FRAMES) bargeIn()
   }
 
   const openListener = (stream: MediaStream): void => {
@@ -949,7 +982,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       const analyser = context.createAnalyser()
       analyser.fftSize = 2048
       source.connect(analyser)
-      listenRef.current = { stream, context, analyser, timer: setInterval(listenTick, TICK_MS) }
+      listenRef.current = { stream, context, analyser, timer: setInterval(listenTick, LISTENER_TICK_MS) }
     } catch {
       stream.getTracks().forEach(track => track.stop())
     }
@@ -957,6 +990,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
 
   // The privacy contract: the microphone is live only while a reply is audible or a capture is running, and is released otherwise.
   // A listen request still pending when a press starts opens a second stream for the press's capture; the pending stream is stopped on arrival.
+  // Two limits, documented and not fixed:
+  // - An AudioContext created without a user gesture may start suspended. The analyser then reads silence, and barge-in is silently off until the first gesture.
+  // - The first reply shows the microphone prompt. A denial leaves barge-in off for the mount.
   const syncListening = (): void => {
     if (!listenWanted()) {
       releaseListener()
@@ -966,7 +1002,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     listenPendingRef.current = true
     let request: Promise<MediaStream>
     try {
-      request = navigator.mediaDevices.getUserMedia({ audio: true })
+      request = navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS)
     } catch (error) {
       request = Promise.reject(error)
     }
@@ -1088,7 +1124,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       stream = handedOver
     } else {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS)
       } catch {
         setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone permission denied' }))
         return
