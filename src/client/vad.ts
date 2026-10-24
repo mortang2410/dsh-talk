@@ -49,6 +49,24 @@ export function silenceTrips(silenceMs: number, thresholdMs: number): boolean {
  */
 export const LISTENER_ENERGY_MULTIPLIER = 5
 
+/**
+ * Bounds of the listener floor. The configured threshold runs 0 to 1, so an unclamped
+ * multiple reaches 1.0 at a threshold of 0.2 and no float speech can ever trip it. The
+ * ceiling keeps the floor reachable by speech; the floor keeps silence-level noise off the trigger.
+ */
+export const LISTENER_FLOOR_MIN = 0.03
+export const LISTENER_FLOOR_MAX = 0.2
+
+/**
+ * The listener's energy floor for a configured capture threshold: the multiple of the threshold,
+ * clamped into [LISTENER_FLOOR_MIN, LISTENER_FLOOR_MAX].
+ * @param energyThreshold - the configured capture energy threshold.
+ * @returns the listener floor.
+ */
+export function listenerFloor(energyThreshold: number): number {
+  return Math.min(LISTENER_FLOOR_MAX, Math.max(LISTENER_FLOOR_MIN, energyThreshold * LISTENER_ENERGY_MULTIPLIER))
+}
+
 /** Listener tick, in milliseconds. Shorter than the capture tick, so the frame count stays precise. */
 export const LISTENER_TICK_MS = 100
 

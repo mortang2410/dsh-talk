@@ -22,9 +22,9 @@ import {
   CAPTURE_SILENCE_TIMEOUT_MS,
   isSpeechFrame,
   LISTENER_CONSECUTIVE_FRAMES,
-  LISTENER_ENERGY_MULTIPLIER,
   LISTENER_ONSET_MS,
   LISTENER_TICK_MS,
+  listenerFloor,
   rmsOf,
   silenceTrips,
 } from './vad.ts'
@@ -965,7 +965,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
     const buffer = new Float32Array(listener.analyser.fftSize)
     listener.analyser.getFloatTimeDomainData(buffer)
-    const floor = (settingsRef.current?.record.vad.energyThreshold ?? 0.01) * LISTENER_ENERGY_MULTIPLIER
+    const floor = listenerFloor(settingsRef.current?.record.vad.energyThreshold ?? 0.01)
     listenRunRef.current = advanceSpeechRun(listenRunRef.current, isSpeechFrame(rmsOf(buffer), floor))
     if (listenRunRef.current >= LISTENER_CONSECUTIVE_FRAMES) bargeIn()
   }

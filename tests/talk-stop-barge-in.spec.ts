@@ -18,8 +18,11 @@ import { SPEECH_POLL_MS } from '../src/client/speechPoll.ts'
 import {
   advanceSpeechRun,
   LISTENER_CONSECUTIVE_FRAMES,
+  LISTENER_FLOOR_MAX,
+  LISTENER_FLOOR_MIN,
   LISTENER_ONSET_MS,
   LISTENER_TICK_MS,
+  listenerFloor,
 } from '../src/client/vad.ts'
 import type { TalkAudio, TalkLatest, TalkStatus } from '../src/wire.ts'
 
@@ -235,6 +238,21 @@ async function pressMic(): Promise<void> {
 function speech(count: number): number[] {
   return Array.from({ length: count }, () => 0.5)
 }
+
+describe('listener floor (pure, clamped)', () => {
+  it('the default threshold 0.01 gives the 0.05 floor, unchanged', () => {
+    expect(listenerFloor(0.01)).toBeCloseTo(0.05, 10)
+  })
+
+  it('a threshold of 0.2 is held at the ceiling, not 1.0, so speech can still trip the listener', () => {
+    expect(listenerFloor(0.2)).toBe(LISTENER_FLOOR_MAX)
+    expect(listenerFloor(0.2)).toBeLessThan(1)
+  })
+
+  it('a threshold of 0 is raised to the minimum, so silence-level noise cannot trip the listener', () => {
+    expect(listenerFloor(0)).toBe(LISTENER_FLOOR_MIN)
+  })
+})
 
 describe('listener run (pure)', () => {
   it('a speech frame extends the run and a quiet frame resets it to zero', () => {
