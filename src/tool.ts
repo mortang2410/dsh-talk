@@ -97,6 +97,8 @@ export function speakableText(raw: string): string {
       continue
     }
     if (inColumnTable.has(index) || RULE_LINE.test(line)) continue
+    // A shell prompt, a footnote definition and a single-line JSON object are not speech.
+    if (/^\s*\$\s/u.test(line) || /^\s*\[\^[^\]]+\]:/u.test(line) || /^\s*\{.*\}\s*$/u.test(line)) continue
     if (/^( {4}|\t)/u.test(line) || isTableLine(line)) continue
     kept.push(line)
   }
@@ -105,13 +107,15 @@ export function speakableText(raw: string): string {
     .replace(/\[([^\]]*)\]\([^)]*\)/gu, ' $1 ')
     .replace(/https?:\/\/\S+/giu, ' ')
     .replace(/(?<![\w.])www\.[\w.-]+\S*/giu, ' ')
-    .replace(/(?<![\w.])[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|dev|ai|co|app|sh|me|info|xyz|gov|edu|uk|de|fr|jp|cn)\b\S*/giu, ' ')
     // An inline code span is code: drop it whole rather than leave the bare word behind.
     .replace(/`[^`]*`/gu, ' ')
     .replace(/(?<![\w/.-])[\w-]+\.(?:ts|tsx|js|mjs|json|md|py|sh|ya?ml|toml|txt|csv|lock)\b/giu, ' ')
     .replace(/(?<=^|[\s(])(?:~|\.{1,2})?\/\S+\)?/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]{1,8}(?![\w/])/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+){2,}(?![\w/])/gu, ' ')
+    // Any domain shape, not a fixed list of common TLDs: two or more letters after the last
+    // dot. Path rules run first so a path is gone before its tail can look like a domain.
+    .replace(/(?<![\w.-])[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\b\S*/giu, ' ')
     .replace(/`/gu, '')
     .replace(/\s+/gu, ' ')
     .trim()
@@ -177,7 +181,9 @@ export function speakTool(service: TalkService, maxChars: number) {
       if (text.length > maxChars) {
         throw new Error(`dsh-talk: speak text is ${text.length} characters, over the ${maxChars} character cap; shorten the paraphrase and retry`)
       }
-      const spoken = speakableText(text)
+      // The untrimmed text goes to the filter: trimming first would strip the indentation
+      // that marks a leading indented code line as code.
+      const spoken = speakableText(args.text)
       if (spoken === '') {
         throw new Error('dsh-talk: nothing speakable is left after removing code, tables and paths; write a plain paraphrase and retry')
       }

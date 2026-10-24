@@ -262,3 +262,33 @@ describe('speakableText: tables with no pipes and a lead-in left dangling', () =
     expect(speakableText('There are two things: first this, then that.')).toBe('There are two things: first this, then that.')
   })
 })
+
+describe('speakableText: the third review probe found these', () => {
+  it('drops a four-space-indented first line, which the tool path must not trim away first', () => {
+    // The tool trims for the empty and length checks, but the filter sees the raw text: trimming
+    // first would strip the indentation that marks the line as code.
+    expect(speakableText('    const secret = 1\nand then prose')).toBe('and then prose')
+  })
+
+  it('drops a domain with any TLD, not a fixed list of common ones', () => {
+    expect(speakableText('Visit example.edu/docs for reference.')).toBe('Visit for reference.')
+    expect(speakableText('go to example.technology/docs now')).toBe('go to now')
+    expect(speakableText('see example.com for more')).toBe('see for more')
+  })
+
+  it('still removes a path whole before its tail can look like a domain', () => {
+    expect(speakableText('See src/tool.ts for it.')).toBe('See for it.')
+    expect(speakableText('edit config.ts and rerun')).toBe('edit and rerun')
+  })
+
+  it('keeps an abbreviation and a decimal', () => {
+    expect(speakableText('use it, e.g. this one')).toBe('use it, e.g. this one')
+    expect(speakableText('it is 3.5 seconds')).toBe('it is 3.5 seconds')
+  })
+
+  it('drops a shell prompt line, a footnote definition and a one-line JSON object', () => {
+    expect(speakableText('$ npm run test\nthen look at the output')).toBe('then look at the output')
+    expect(speakableText('[^1]: a note here\nthe answer follows')).toBe('the answer follows')
+    expect(speakableText('{"ok":true}\nthe result is ready')).toBe('the result is ready')
+  })
+})
