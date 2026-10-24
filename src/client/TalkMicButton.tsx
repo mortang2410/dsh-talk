@@ -649,8 +649,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
         counted = false
         capture.segmentsOpen -= 1
       }
-      // A stop this code did not request (the browser ended the recorder) ends the segment too.
-      if (capture.recorder === recorder) capture.recorder = null
+      // A stop this code did not request (the browser ended the recorder) ends the segment
+      // too. `capture.recorder` is left alone here: `isRecording` already treats an inactive
+      // recorder as not recording, and every path that clears the field clears it outright.
       const blob = new Blob(chunks, { type: capture.mime })
       enqueue(capture, () => processSegment(capture, blob))
       maybeFinalize(capture)
