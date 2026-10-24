@@ -176,9 +176,10 @@ function checkModelDecision(
   const prompt = stripPhrases(model.prompt)
   if (prompt !== '') return { trigger: true, prompt, source: 'model' }
   // The model fired the trigger but returned nothing to send. If the speaker said something
-  // before the phrase, that speech must not be dropped: use the text before the phrase, which
-  // is what the fallback would have produced.
-  const before = promptBeforeFinalPhrase(rawTranscript)
+  // before the phrase, that speech must not be dropped: use the text before the phrase. The
+  // host form set is used here, not the fallback's, because the model has already recognised
+  // the phrase and a spelling such as "thats my prompt" must not lose the words before it.
+  const before = promptBeforeFinalPhrase(rawTranscript, HOST_FINAL_PHRASE)
   if (before !== null && before !== '') {
     logOverride('dsh-talk heal: model answered trigger true with an empty prompt; using the text before the trigger phrase')
     return { trigger: true, prompt: before, source: 'model' }
@@ -199,8 +200,8 @@ function stripPhrases(prompt: string): string {
  * The fallback's only decision. When a literal form ends the transcript, return the text
  * before it, whitespace collapsed. Otherwise return `null`, and the caller throws.
  */
-function promptBeforeFinalPhrase(rawTranscript: string): string | null {
-  const index = finalPhraseIndex(rawTranscript, FALLBACK_FINAL_PHRASE)
+function promptBeforeFinalPhrase(rawTranscript: string, pattern: RegExp = FALLBACK_FINAL_PHRASE): string | null {
+  const index = finalPhraseIndex(rawTranscript, pattern)
   if (index === null) return null
   // A phrase the speaker also said earlier is still the phrase: it must not reach the prompt.
   // The phrase alone leaves an empty prompt. That is not a miss and not an error: the phrase

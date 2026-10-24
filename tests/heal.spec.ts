@@ -479,3 +479,18 @@ describe('a model trigger with nothing to send', () => {
     expect(result).toEqual({ trigger: true, prompt: '', source: 'model' })
   })
 })
+
+describe('a model trigger with nothing to send: the host form set', () => {
+  it.each([
+    ['that is my prompt', 'write a haiku that is my prompt'],
+    ['thats my prompt', 'write a haiku thats my prompt'],
+    ['that is my prompt with a comma', 'write a haiku that is my prompt,'],
+  ])('recovers the speech before %s when the model returns an empty prompt', async (_label, raw) => {
+    // Breaks if: the recovery uses the fallback's narrower form set, so "thats my prompt" loses
+    // the words before it. The model already recognised the phrase, so the wider set applies.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": ""}')
+    const result = await healTranscript(raw, { endpoint: stub.endpoint, logRawTranscript: () => undefined, logOverride: () => undefined })
+    expect(result).toEqual({ trigger: true, prompt: 'write a haiku', source: 'model' })
+  })
+})
