@@ -98,8 +98,15 @@ export interface SpeechPollDeps {
    * not the expected length: the speech itself normally ends the wait first.
    * The third argument reports whether the chain has moved on (its bound
    * elapsed or the task settled), so the task can stop working once it is true.
+   * The fourth registers a handler that runs when the bound releases the chain,
+   * before the next task starts. It does not run when the task settles by itself.
    */
-  speakText(text: string, onDuration: (seconds: number) => void, released: () => boolean): Promise<void>
+  speakText(
+    text: string,
+    onDuration: (seconds: number) => void,
+    released: () => boolean,
+    onRelease: (handler: () => void) => void,
+  ): Promise<void>
   /**
    * Play decoded audio; resolves when playback ends, fails, pauses or aborts.
    * Calls onDuration with the length in seconds once the player knows it.
@@ -122,12 +129,19 @@ interface PlaybackContext {
   onDuration(seconds: number): void
   /** True once the chain has released this task, because its bound elapsed or it finished. */
   released(): boolean
+  /**
+   * Registers a handler for the chain releasing this task because its bound
+   * elapsed. The handlers run synchronously inside the bound's timer, before the
+   * next task can start. They do not run when the task settles by itself.
+   */
+  onRelease(handler: () => void): void
 }
 
 /**
  * Resolve when `task` settles or when its bound elapses, whichever is first.
  * The bound is {@link PLAYBACK_CAP_MS} until the task reports a duration, then
- * the duration plus {@link PLAYBACK_MARGIN_MS}.
+ * the duration plus {@link PLAYBACK_MARGIN_MS}. When the bound elapses, the
+ * registered release handlers run first, then the promise resolves.
  *
  * @param task - the playback or speech to wait for; it receives the chain context.
  */
@@ -139,6 +153,7 @@ function boundedPlayback(task: (ctx: PlaybackContext) => Promise<void>): Promise
     // listener hears, so a late reply after a stall is the lesser cost.
     let released = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    const releaseHandlers: Array<() => void> = []
     const done = (): void => {
       if (settled) return
       settled = true
@@ -146,10 +161,22 @@ function boundedPlayback(task: (ctx: PlaybackContext) => Promise<void>): Promise
       if (timer !== undefined) clearTimeout(timer)
       resolve()
     }
+    // The bound elapsed before the task settled: run the release handlers, then
+    // release. They run first, so a handler acts before the next task starts.
+    const onBoundElapsed = (): void => {
+      for (const handler of releaseHandlers) {
+        try {
+          handler()
+        } catch {
+          // A failing handler must not hold the chain.
+        }
+      }
+      done()
+    }
     const arm = (ms: number): void => {
       if (settled) return
       if (timer !== undefined) clearTimeout(timer)
-      timer = setTimeout(done, ms)
+      timer = setTimeout(onBoundElapsed, ms)
     }
     arm(PLAYBACK_CAP_MS)
     const ctx: PlaybackContext = {
@@ -157,6 +184,9 @@ function boundedPlayback(task: (ctx: PlaybackContext) => Promise<void>): Promise
         if (Number.isFinite(seconds) && seconds > 0) arm(seconds * 1000 + PLAYBACK_MARGIN_MS)
       },
       released: () => released,
+      onRelease: (handler) => {
+        releaseHandlers.push(handler)
+      },
     }
     let pending: Promise<void>
     try {
@@ -282,7 +312,7 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     remember(latest.utteranceId)
     if (latest.engine === 'browser') {
       const text = latest.text
-      enqueue((ctx) => deps.speakText(text, ctx.onDuration, ctx.released))
+      enqueue((ctx) => deps.speakText(text, ctx.onDuration, ctx.released, ctx.onRelease))
       return
     }
     enqueueAudio(latest.utteranceId)

@@ -187,20 +187,24 @@ interface FakeSpeech {
   reads: number
   /** How many times the button called `speechSynthesis.cancel()`. A cancel clears the flag, as the engine does. */
   cancels: number
+  /** Calls to speak() and cancel() in the order they happened: `speak:<text>` or `cancel`. */
+  order: string[]
 }
-let speech: FakeSpeech = { speaking: false, speaksOnSpeak: false, spoken: [], reads: 0, cancels: 0 }
+let speech: FakeSpeech = { speaking: false, speaksOnSpeak: false, spoken: [], reads: 0, cancels: 0, order: [] }
 
 function stubSpeech(speaksOnSpeak: boolean): void {
-  speech = { speaking: false, speaksOnSpeak, spoken: [], reads: 0, cancels: 0 }
+  speech = { speaking: false, speaksOnSpeak, spoken: [], reads: 0, cancels: 0, order: [] }
   vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
   vi.stubGlobal('speechSynthesis', {
     getVoices: () => [],
     speak: (utterance: FakeUtterance) => {
       speech.spoken.push(utterance)
+      speech.order.push(`speak:${utterance.text}`)
       if (speech.speaksOnSpeak) speech.speaking = true
     },
     cancel: () => {
       speech.cancels += 1
+      speech.order.push('cancel')
       speech.speaking = false
     },
     get speaking(): boolean {
@@ -208,6 +212,17 @@ function stubSpeech(speaksOnSpeak: boolean): void {
       return speech.speaking
     },
   })
+}
+
+/**
+ * Stop the speaking poll from ticking, as a throttled or hidden tab does. Its
+ * interval is created but its callback never runs, so the flag is not read and
+ * only the chain's bound can release the reply. Call it before the reply starts.
+ * The mount's own poll was created earlier, so it keeps running.
+ */
+function stallSpeakingPoll(): void {
+  const realSetInterval = globalThis.setInterval
+  vi.stubGlobal('setInterval', (_handler: () => void, ms: number) => realSetInterval(() => {}, ms))
 }
 
 /** A browser-engine reply of `characters` characters, as talk/latest reports it. */
@@ -781,5 +796,89 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     expect(speech.spoken).toHaveLength(1)
     await advanceTo(126_000)
     expect(vi.getTimerCount()).toBe(baseline)
+  })
+
+  it('the bound releases a reply whose flag still reads true: cancel is called once, at the bound, and the next clip starts after it', async () => {
+    // The speaking poll is stalled, so the flag is never read. The 200-character reply is bounded at 125.7 s
+    // (125 s ceiling plus margin, armed at its 0.7 s start) while the engine still speaks. Only the release hook can cancel it.
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    stallSpeakingPoll()
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(125_700 - 1)
+    expect(speech.cancels).toBe(0)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(125_700)
+    expect(speech.cancels).toBe(1)
+    await advanceTo(126_100)
+    expect(constructedAudio).toHaveLength(1)
+    // The clip began after the cancel cleared the flag, so no audio played over the speech.
+    expect(speakingAtAudioStart).toEqual([false])
+    expect(speech.cancels).toBe(1)
+  })
+
+  it('the reply ends by itself while the flag reads false: the bound never fires and nothing is cancelled', async () => {
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    speech.spoken[0]?.onstart?.()
+    speech.spoken[0]?.onend?.()
+    remote.latestValue = utterance('n1')
+    await advanceTo(SPEECH_POLL_MS * 3)
+    expect(constructedAudio).toHaveLength(1)
+    // The bound would have released at 125.7 s; advance past it.
+    await advanceTo(130_000)
+    expect(speech.cancels).toBe(0)
+  })
+
+  it('the reply ends by itself while another utterance keeps the flag true: the bound cancels nothing, so that speech is not cut', async () => {
+    // The flag stays true after this reply's end, as it would while another talk button's utterance is audible.
+    // Only a release hook that also runs on the task's own settle would cancel here.
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    speech.spoken[0]?.onend?.()
+    await advanceTo(130_000)
+    expect(speech.cancels).toBe(0)
+  })
+
+  it('the cancel on a bound release comes before the next reply is spoken: the order is speak, cancel, speak', async () => {
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    stallSpeakingPoll()
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    remote.latestValue = { ...browserReply('n1', 10), text: 'next reply' }
+    await advanceTo(125_700)
+    expect(speech.order).toEqual([`speak:${'a'.repeat(200)}`, 'cancel', 'speak:next reply'])
+  })
+
+  it('the bound releases a reply whose flag reads false: the release hook does not cancel', async () => {
+    // Stalled poll and a flag that never reads true: the guard in the hook is what keeps cancel from running.
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    stallSpeakingPoll()
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    await advanceTo(125_700 + SPEECH_POLL_MS)
+    expect(speech.cancels).toBe(0)
   })
 })

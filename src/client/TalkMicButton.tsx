@@ -151,12 +151,14 @@ function readSpeaking(): boolean | null {
  * reads, SPEAKING_POLL_MS apart. The poll stops once `released` reports that
  * the chain has moved on.
  *
- * When the cap fires and the flag still reads true, the reply is audible and the
- * chain would start the next reply over it, so the cap calls
- * `speechSynthesis.cancel()` before it finishes. `cancel()` clears the page's
- * whole speech queue: on a page with more than one mounted talk button, it also
- * stops any other utterance that is queued or speaking. When the flag reads
- * false, the cap does not cancel.
+ * A release for any reason cancels speech that is still audible. That covers the
+ * absolute cap (PLAYBACK_ABSOLUTE_MAX_MS) and the chain's bound, which releases
+ * the reply when the speaking poll has stopped ticking, as in a throttled or
+ * hidden tab. The release handler runs before the chain starts the next reply,
+ * so the cancel never cuts a later reply. When the flag reads false, nothing is
+ * cancelled. `speechSynthesis.cancel()` clears the page's whole speech queue: on
+ * a page with more than one mounted talk button, it also stops any other
+ * utterance that is queued or speaking.
  *
  * Before speaking, `onDuration` receives an inactivity ceiling in seconds:
  * `min(PLAYBACK_CEILING_MAX_MS, max(PLAYBACK_CAP_MS, text.length *
@@ -167,6 +169,7 @@ function readSpeaking(): boolean | null {
  * @param delivery - the browser delivery settings, when the snapshot has loaded.
  * @param onDuration - receives the inactivity ceiling in seconds, now and on each true read.
  * @param released - true once the chain has moved on; the poll stops then.
+ * @param onRelease - registers the handler that cancels audible speech when the chain's bound releases the reply.
  * @param engine - this mount's record of whether the engine fires `onstart`.
  * @returns a promise that resolves when the speech ends or fails, so the poller
  *   can keep it in order with the audio replies.
@@ -176,6 +179,7 @@ function speakWithBrowserVoice(
   delivery: TalkStatus['tts']['browser'] | undefined,
   onDuration: (seconds: number) => void,
   released: () => boolean,
+  onRelease: (handler: () => void) => void,
   engine: BrowserEngineState,
 ): Promise<void> {
   if (typeof speechSynthesis === 'undefined') {
@@ -215,6 +219,21 @@ function speakWithBrowserVoice(
       if (absoluteCap !== undefined) clearTimeout(absoluteCap)
       resolve()
     }
+    // The chain's bound releases this reply, and the next reply starts only after
+    // this handler returns. The flag still reading true means the reply is audible,
+    // so it is cancelled here, in the same form as the cap path.
+    onRelease(() => {
+      if (readSpeaking() === true) {
+        try {
+          speechSynthesis.cancel()
+        } catch {
+          // The engine refused the cancel; the reply still releases.
+        }
+      }
+      // Clear the poll and the cap now. Otherwise the cap could fire later and
+      // cancel a reply that started after this one.
+      finish()
+    })
     utterance.onstart = () => {
       started = true
       engine.firesStart = true
@@ -638,8 +657,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     return startSpeechPoll(sessionIdProp, {
       latest,
       audio,
-      speakText: (text, onDuration, released) =>
-        speakWithBrowserVoice(text, settingsRef.current?.tts.browser, onDuration, released, browserEngine),
+      speakText: (text, onDuration, released, onRelease) =>
+        speakWithBrowserVoice(text, settingsRef.current?.tts.browser, onDuration, released, onRelease, browserEngine),
       playAudio: playAudioEntry,
       isHidden: () => typeof document !== 'undefined' && document.hidden,
       onVisibilityChange: (listener) => {
