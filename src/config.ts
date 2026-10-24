@@ -21,12 +21,6 @@ export const DEFAULT_MAX_RECORD_SECONDS = 60
 /** Ceiling for one legacy recording: the client holds the whole clip in memory. */
 export const MAX_RECORD_SECONDS = 600
 
-/** Default hard ceiling, in seconds, for one segmented capture (see `RecordConfig.ceilingSeconds`). */
-export const DEFAULT_CEILING_SECONDS = 600
-
-/** Largest value accepted for `record.ceilingSeconds`. */
-export const MAX_CEILING_SECONDS = 3600
-
 /** Default speak-tool text cap in characters. */
 export const DEFAULT_MAX_SPEAK_CHARS = 20_000
 
@@ -73,16 +67,10 @@ export interface RecordConfig {
   /**
    * Recording cap in seconds (default 60). It governs only the legacy single recording
    * (voice-activity detection off, or no AudioContext), which stops at this cap. A
-   * segmented capture ignores it: that capture is governed by `ceilingSeconds`.
+   * segmented capture (voice-activity detection on) has no cap: it ends on a stop click,
+   * or after 120 seconds of silence once a segment has been captured.
    */
   maxSeconds?: number
-  /**
-   * Hard ceiling in seconds for one segmented capture (default 600). It governs only the
-   * segmented capture (voice-activity detection on). Reaching it ends the capture: recording
-   * stops and the words said since the last trigger go to the composer unsent. It never
-   * submits. The legacy single recording ignores it. It is the only automatic end of a capture.
-   */
-  ceilingSeconds?: number
   /** Submit the transcription as the user message automatically (default false). */
   autoSubmit?: boolean
   /** Voice-activity detection (silence auto-end). */
@@ -199,8 +187,6 @@ export interface ResolvedConfig {
   recordHotkey: string | null
   /** Recording cap in seconds for the legacy single recording. */
   recordMaxSeconds: number
-  /** Hard ceiling in seconds for one segmented capture; reaching it ends the capture unsent. */
-  recordCeilingSeconds: number
   /** Submit transcriptions automatically. */
   recordAutoSubmit: boolean
   /** Whether silence auto-end (VAD) is enabled. */
@@ -277,7 +263,6 @@ export const Config: z<Config> = z.object({
     enabled: z.boolean().default(true),
     hotkey: z.union([z.string(), z.const(null)]).default(null),
     maxSeconds: z.number().min(1).max(MAX_RECORD_SECONDS).default(DEFAULT_MAX_RECORD_SECONDS),
-    ceilingSeconds: z.number().min(1).max(MAX_CEILING_SECONDS).default(DEFAULT_CEILING_SECONDS),
     autoSubmit: z.boolean().default(false),
     vad: z.object({
       enabled: z.boolean().default(true),
@@ -404,7 +389,6 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
     throw new Error('dsh-talk: config.record.hotkey must be at most 40 characters')
   }
   const recordMaxSeconds = numberOf(record.maxSeconds, DEFAULT_MAX_RECORD_SECONDS, 1, MAX_RECORD_SECONDS, 'record.maxSeconds')
-  const recordCeilingSeconds = numberOf(record.ceilingSeconds, DEFAULT_CEILING_SECONDS, 1, MAX_CEILING_SECONDS, 'record.ceilingSeconds')
   const recordAutoSubmit = booleanOf(record.autoSubmit, false, 'record.autoSubmit')
 
   const vadEnabled = booleanOf(record.vad?.enabled, true, 'record.vad.enabled')
@@ -480,7 +464,6 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
     recordEnabled,
     recordHotkey,
     recordMaxSeconds,
-    recordCeilingSeconds,
     recordAutoSubmit,
     vadEnabled,
     vadSilenceMs,

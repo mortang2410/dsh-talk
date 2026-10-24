@@ -72,8 +72,6 @@ export interface TalkStatus {
     enabled: boolean
     hotkey: string | null
     maxSeconds: number
-    /** Hard ceiling in seconds for one segmented capture (the legacy path ignores it). */
-    ceilingSeconds: number
     autoSubmit: boolean
     /** Voice-activity detection (silence auto-end). */
     vad: {
@@ -121,7 +119,6 @@ export const TALK_STATUS_SCHEMA = z.object({
     enabled: z.boolean(),
     hotkey: z.string().nullable(),
     maxSeconds: z.number().int(),
-    ceilingSeconds: z.number().int(),
     autoSubmit: z.boolean(),
     vad: z.object({
       enabled: z.boolean(),

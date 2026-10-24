@@ -23,8 +23,8 @@ export interface MicViewModel {
 
 /** An event the recorder state can receive. */
 export type MicEvent =
-  | { kind: 'press'; maxSeconds: number }
-  | { kind: 'tick'; elapsedSec: number; maxSeconds: number }
+  | { kind: 'press'; maxSeconds?: number }
+  | { kind: 'tick'; elapsedSec: number; maxSeconds?: number }
   | { kind: 'stopped' }
   | { kind: 'transcribed'; text: string }
   | { kind: 'failed'; message: string }
@@ -44,7 +44,7 @@ export function foldMic(state: MicViewModel, event: MicEvent): MicViewModel {
       return { phase: 'recording', elapsedSec: 0, lastText: state.lastText, error: undefined }
     case 'tick':
       return state.phase === 'recording'
-        ? { ...state, elapsedSec: Math.min(event.elapsedSec, event.maxSeconds) }
+        ? { ...state, elapsedSec: event.maxSeconds === undefined ? event.elapsedSec : Math.min(event.elapsedSec, event.maxSeconds) }
         : state
     case 'stopped':
       return { ...state, phase: 'transcribing' }

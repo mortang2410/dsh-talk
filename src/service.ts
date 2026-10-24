@@ -411,7 +411,6 @@ export class TalkService extends TypertRemoteService {
         enabled: this.resolved.recordEnabled,
         hotkey: this.resolved.recordHotkey,
         maxSeconds: this.resolved.recordMaxSeconds,
-        ceilingSeconds: this.resolved.recordCeilingSeconds,
         autoSubmit: this.resolved.recordAutoSubmit,
         vad: {
           enabled: this.resolved.vadEnabled,
