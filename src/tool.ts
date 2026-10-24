@@ -110,12 +110,27 @@ export function speakableText(raw: string): string {
     // An inline code span is code: drop it whole rather than leave the bare word behind.
     .replace(/`[^`]*`/gu, ' ')
     .replace(/(?<![\w/.-])[\w-]+\.(?:ts|tsx|js|mjs|json|md|py|sh|ya?ml|toml|txt|csv|lock)\b/giu, ' ')
-    .replace(/(?<=^|[\s(])(?:~|\.{1,2})?\/\S+\)?/gu, ' ')
+    .replace(/(?<![\w.-])\(?(?:~|\.{1,2})?\/\S+\)?/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]{1,8}(?![\w/])/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+){2,}(?![\w/])/gu, ' ')
-    // Any domain shape, not a fixed list of common TLDs: two or more letters after the last
-    // dot. Path rules run first so a path is gone before its tail can look like a domain.
-    .replace(/(?<![\w.-])[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\b\S*/giu, ' ')
+    // Any domain shape, not a fixed list of common TLDs: two or more LOWERCASE letters after
+    // the last dot, which is what keeps an initialised name like J.R.R.Tolkien out of it. A
+    // surrounding pair of parentheses goes with the domain. Path rules run first so a path is
+    // gone before its tail can look like a domain.
+    .replace(/(?<![\w.-])\(?[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}\b\S*\)?/gu, ' ')
+    // A removal can leave a connector with nothing after it ("Visit our docs at"). It cannot
+    // stand at the end of a spoken sentence, so it goes too.
+    .replace(/\s+(?:at|in|on|to|from|via|see|visit|open|inside|under)\s*\.?$/iu, '')
+    // A quoted span carrying both a code keyword and code punctuation is a quoted
+    // expression, not speech. Ordinary quoted prose is left alone.
+    .replace(/["“]([^"”]*)["”]/gu, (match, inner: string) =>
+      /[(){};]/u.test(inner) && /\b(?:if|else|for|while|return|const|let|var|def|class|function|import|print|echo|await|async|throw|try|catch)\b/u.test(inner)
+        ? ' '
+        : match)
+    // Removing a token can leave an opening parenthesis with nothing in it, or a space
+    // before punctuation.
+    .replace(/\(\s*(?=[,.;:!?]|\s|$)/gu, ' ')
+    .replace(/\s+([,.;:!?])/gu, '$1')
     .replace(/`/gu, '')
     .replace(/\s+/gu, ' ')
     .trim()

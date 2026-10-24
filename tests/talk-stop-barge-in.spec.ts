@@ -25,6 +25,7 @@ import type { TalkAudio, TalkLatest, TalkStatus } from '../src/wire.ts'
 
 const SESSION = 'session-barge-in-under-test'
 const LABEL = 'Stop playback, or cancel the running turn'
+const CANCEL = 'Cancel the running turn'
 const TICK_MS = 500
 const MIC_OPTIONS = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
 const SETTINGS: TalkStatus = {
@@ -184,6 +185,7 @@ function mount(): void {
     send: async () => {},
     sessionId: SESSION,
     stopLabel: LABEL,
+    cancelLabel: CANCEL,
     watchTurn: (_sessionId: string, listener: (running: boolean) => void) => {
       turn.listeners.push(listener)
       listener(turn.running)
@@ -626,6 +628,27 @@ describe('barge-in while a reply is audible', () => {
     expect(micStreams[0]?.stopped).toBe(1)
     expect(capture.stopped).toBe(0)
     expect(micStreams.filter((stream) => stream.stopped === 0)).toHaveLength(1)
+  })
+
+  it('the armed state changes the label to the cancel cue and reverts when the window lapses', async () => {
+    // The armed state is the second press's safety signal, so the cue a user can reach must
+    // change with it. A mutant that always renders stopLabel passes every data-armed test.
+    mount()
+    await advance(0)
+    setRunning(true)
+    await publish('u1')
+    expect(stopButton()?.getAttribute('aria-label')).toBe(LABEL)
+    expect(stopButton()?.getAttribute('title')).toBe(LABEL)
+
+    pressStop()
+    expect(stopButton()?.dataset.armed).toBe('true')
+    expect(stopButton()?.getAttribute('aria-label')).toBe(CANCEL)
+    expect(stopButton()?.getAttribute('title')).toBe(CANCEL)
+
+    await advance(600)
+    expect(stopButton()?.dataset.armed).toBe('false')
+    expect(stopButton()?.getAttribute('aria-label')).toBe(LABEL)
+    expect(stopButton()?.getAttribute('title')).toBe(LABEL)
   })
 
   it('the stop control carries the localized label as title and aria-label', async () => {

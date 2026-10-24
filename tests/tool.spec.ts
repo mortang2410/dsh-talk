@@ -292,3 +292,22 @@ describe('speakableText: the third review probe found these', () => {
     expect(speakableText('{"ok":true}\nthe result is ready')).toBe('the result is ready')
   })
 })
+
+describe('speakableText: the ship-verdict review found these', () => {
+  it('drops a quoted code expression and keeps quoted prose', () => {
+    expect(speakableText('The code says "if (ready) return true".')).toBe('The code says.')
+    expect(speakableText('He said "the report (draft) is ready".')).toBe('He said "the report (draft) is ready".')
+  })
+
+  it('keeps a compact initialed name while still dropping an arbitrary TLD', () => {
+    expect(speakableText('J.R.R.Tolkien wrote the story.')).toBe('J.R.R.Tolkien wrote the story.')
+    expect(speakableText('J. R. R. Tolkien wrote the story.')).toBe('J. R. R. Tolkien wrote the story.')
+    expect(speakableText('go to example.technology/docs now')).toBe('go to now')
+  })
+
+  it('leaves no orphaned parenthesis or dangling connector behind a removed token', () => {
+    expect(speakableText('See (/home/me/private.txt), then edit config.ts.')).toBe('See then edit.')
+    expect(speakableText('See the service (example.com) for details.')).toBe('See the service for details.')
+    expect(speakableText('Visit our docs at example.com.')).toBe('Visit our docs')
+  })
+})
