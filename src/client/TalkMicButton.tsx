@@ -422,8 +422,8 @@ function speakWithBrowserVoice(
  * Play one cached audio entry. Resolves when playback ends, fails, pauses or
  * aborts, so the poller can keep utterances in arrival order. The poller also
  * bounds the wait, so a player that fires none of these still releases the
- * chain. Playback failure is silent by design: the utterance is already marked
- * seen and must not be retried.
+ * chain. Playback failure is silent to the user: the utterance is already marked
+ * seen and must not be retried. A start the browser refuses is logged to the console.
  *
  * @param entry - the audio served by `talk/audio`.
  * @param onDuration - receives the audio length in seconds once the player knows it.
@@ -468,7 +468,11 @@ function playAudioEntry(
     player.addEventListener('abort', finish)
     player.addEventListener('loadedmetadata', () => onDuration(player.duration))
     endPlayback = begin(stopNow)
-    void Promise.resolve(player.play()).catch(finish)
+    void Promise.resolve(player.play()).catch((error: unknown) => {
+      // The browser refused to start this reply (Safari's auto-play block is one case). Logged, not retried.
+      console.warn(`[dsh-talk] reply ${entry.utteranceId} did not start:`, error)
+      finish()
+    })
   })
 }
 

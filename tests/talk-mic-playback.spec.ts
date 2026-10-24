@@ -52,7 +52,7 @@ const speakingAtAudioStart: boolean[] = []
  * What each successive player does: fire ended, fire pause, fire abort, or fire
  * nothing (a stalled element). Consumed in construction order; default 'end'.
  */
-type PlayerScript = 'end' | 'pause' | 'abort' | 'hang' | 'hang-with-duration'
+type PlayerScript = 'end' | 'pause' | 'abort' | 'hang' | 'hang-with-duration' | 'reject'
 const playerScripts: PlayerScript[] = []
 
 /** Clip length the 'hang-with-duration' script reports, in seconds. */
@@ -72,6 +72,8 @@ class FakeAudio {
     this.handlers.set(type, [...(this.handlers.get(type) ?? []), handler])
   }
   play(): Promise<void> {
+    // A refused start rejects play(), as Safari does when auto-play is blocked.
+    if (this.script === 'reject') return Promise.reject(Object.assign(new Error('not allowed'), { name: 'NotAllowedError' }))
     // The script fires on the next microtask, the way a real element does after play().
     return Promise.resolve().then(() => {
       if (this.script === 'hang') return
@@ -938,5 +940,26 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     expect(speech.spoken).toHaveLength(1)
     await advanceTo(125_700 + SPEECH_POLL_MS)
     expect(speech.cancels).toBe(0)
+  })
+
+  it('a start the browser refuses is logged once, not retried, and releases the chain for the next reply', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const refusals = (): unknown[][] => warn.mock.calls.filter((call) => String(call[0]).includes('did not start'))
+    mount()
+    await advance(0)
+    playerScripts.push('reject', 'end')
+    remote.latestValue = utterance('blocked')
+    await advance(SPEECH_POLL_MS)
+    expect(refusals()).toHaveLength(1)
+    expect(String(refusals()[0]?.[0])).toContain('blocked')
+    await advance(SPEECH_POLL_MS * 3)
+    expect(remote.audioCalls).toEqual(['blocked'])
+    // Positive control: the refused reply released the chain, so the next reply plays.
+    remote.latestValue = utterance('next')
+    await advance(SPEECH_POLL_MS * 2)
+    expect(remote.audioCalls).toEqual(['blocked', 'next'])
+    expect(constructedAudio).toHaveLength(2)
+    expect(refusals()).toHaveLength(1)
+    warn.mockRestore()
   })
 })
