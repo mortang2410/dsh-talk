@@ -113,10 +113,10 @@ function heal(raw: string, endpoint: string, timeoutMs?: number) {
 }
 
 describe('contract constants', () => {
-  it('points at the resident bonsai2-27b endpoint named in SPEC.md', () => {
+  it('points at the resident scuba-27b endpoint named in SPEC.md', () => {
     // Breaks if: the endpoint, model, or port changes without the spec changing with it.
     expect(HEAL_ENDPOINT).toBe('http://127.0.0.1:8082/v1/chat/completions')
-    expect(HEAL_MODEL).toBe('bonsai2-27b')
+    expect(HEAL_MODEL).toBe('scuba-27b')
   })
 
   it('keeps the timeout above the 8.58 s outlier in research/1cds-heal-recheck.md', () => {
@@ -171,7 +171,7 @@ describe('request shape and ordering', () => {
     await heal(RAW_EXACT, stub.endpoint)
     const body = stub.requests[0] ?? {}
     expect(body).toMatchObject({
-      model: 'bonsai2-27b',
+      model: 'scuba-27b',
       temperature: 0,
       max_tokens: 300,
       reasoning_effort: 'none',
