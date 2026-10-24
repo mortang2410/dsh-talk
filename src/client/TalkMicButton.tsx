@@ -896,7 +896,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   }
 
   // Cancel this session's running turn through the scoped conversation service.
-  // Limit: a pending approval does not stop this cancel; it matches the built-in Escape stop, which also skips sessions with a pending interaction.
+  // The cancel is guarded by the same turn signal as the watch (index.ts readCancellable), which mirrors
+  // the built-in Escape guard at dsh-client-ui-conversation lib/client.js:22677. A pending interaction,
+  // a removed session, or a non-continuable subagent makes this cancel a no-op.
   const cancelTurnNow = async (): Promise<void> => {
     if (cancelTurn === undefined || typeof sessionIdProp !== 'string' || sessionIdProp === '') return
     if (cancellingRef.current) return

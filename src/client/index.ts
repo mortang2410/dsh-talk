@@ -25,6 +25,7 @@ import type { TalkSettingsTabInjected } from './TalkSettingsTab.tsx'
 import { TalkSettingsTab } from './TalkSettingsTab.tsx'
 import type { TalkMicInjected } from './TalkMicButton.tsx'
 import { TalkMicButton } from './TalkMicButton.tsx'
+import { turnCancellable } from './present.ts'
 import { en, zh, type TalkLocaleKey } from './locales.ts'
 import { TALK_REMOTE } from './remote.ts'
 import { installTalkStyles } from './styles.ts'
@@ -57,9 +58,14 @@ interface SnapshotFace<T> {
   subscribe(listener: () => void): () => void
 }
 
-/** The session binding fields the stop control reads: the running flag of the session. */
+/** The session binding fields the stop control reads: the running, removed and subagent flags of the session. */
 interface SessionBindingFace {
-  session: SnapshotFace<{ running?: boolean }>
+  session: SnapshotFace<{ running?: boolean; removed?: boolean; subagent?: { address: { mode: string } } | null }>
+}
+
+/** The session status service the built-in stop reads for a pending interaction. */
+interface UiSessionFace {
+  sessionStatus: SnapshotFace<{ get(id: unknown): { pendingInteraction?: unknown } | undefined }>
 }
 
 /** The session service faces the stop control reads, declared locally like the other faces here. */
@@ -141,21 +147,40 @@ export async function apply(ctx: Context): Promise<void> {
       if (actx === undefined || actx === null) return undefined
       return conversation.input.for(actx as Parameters<typeof conversation.input.for>[0])
     }
-    // The stop control's turn signal. A session has a running turn when its session
-    // binding reports running and its conversation publishes an open turn: the same
-    // two reads the built-in Escape stop makes. Absent services mean no turn is ever
-    // reported running, so the turn stage stays off.
+    // The stop control's turn signal. It is the built-in Escape guard (dsh-client-ui-conversation
+    // `lib/client.js`, `currentTurn` in `installStopShortcut`), read through `turnCancellable`:
+    // running, not removed, a continuable subagent or none, no pending interaction, and an open turn.
+    // Absent services fail closed: the turn is never reported cancellable, so no cancel runs.
     // Limit: the watch reads the binding once, when subscribed. A session binding replaced while
     // this button stays mounted is not followed until the sessionId prop changes.
     const uiConversation = scope.get('uiConversation') as unknown as UiConversationFace | undefined
+    const uiSession = scope.get('uiSession') as unknown as UiSessionFace | undefined
+    const readCancellable = (id: string): boolean => {
+      if (uiConversation === undefined || uiSession === undefined || sessions?.binding === undefined) return false
+      try {
+        const binding = sessions.binding(id) as SessionBindingFace | undefined
+        if (binding === undefined) return false
+        const session = binding.session.getSnapshot()
+        return turnCancellable({
+          running: session.running === true,
+          removed: session.removed === true,
+          subagentMode: session.subagent === null || session.subagent === undefined ? null : session.subagent.address.mode,
+          pendingInteraction: uiSession.sessionStatus.getSnapshot().get(id)?.pendingInteraction !== undefined,
+          openTurn: uiConversation.binding(binding).openTurn.getSnapshot() !== undefined,
+        })
+      } catch {
+        return false
+      }
+    }
     const watchTurn: NonNullable<TalkMicInjected['watchTurn']> = (id, listener) => {
       if (typeof id !== 'string' || uiConversation === undefined || sessions?.binding === undefined) return () => {}
       try {
         const binding = sessions.binding(id) as SessionBindingFace | undefined
         if (binding === undefined) return () => {}
         const openTurn = uiConversation.binding(binding).openTurn
-        const notify = (): void => listener(binding.session.getSnapshot().running === true && openTurn.getSnapshot() !== undefined)
+        const notify = (): void => listener(readCancellable(id))
         const disposers = [binding.session.subscribe(notify), openTurn.subscribe(notify)]
+        if (uiSession !== undefined) disposers.push(uiSession.sessionStatus.subscribe(notify))
         notify()
         return () => {
           for (const dispose of disposers) dispose()
@@ -165,7 +190,9 @@ export async function apply(ctx: Context): Promise<void> {
       }
     }
     // The built-in stop button's cancel: the session's scoped conversation service, which cancels the in-flight turn and keeps the queue.
+    // A refused turn (see readCancellable) is a silent no-op, like the built-in's reset.
     const cancelTurn: NonNullable<TalkMicInjected['cancelTurn']> = async (id) => {
+      if (typeof id !== 'string' || !readCancellable(id)) return
       const scoped = sessions?.scope?.(id) as { get(name: string): unknown } | null | undefined
       const scopedConversation = scoped?.get('conversation') as IConversation | undefined
       if (scopedConversation === undefined) throw new Error('conversation service unavailable through the session scope')

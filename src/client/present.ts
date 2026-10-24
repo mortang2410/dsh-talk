@@ -128,6 +128,40 @@ export function planBargeIn(input: { playing: boolean; turnRunning: boolean }): 
   return { stopPlayback: input.playing, cancelTurn: input.playing && input.turnRunning }
 }
 
+/** The facts the built-in Escape stop reads before it cancels a session's turn. */
+export interface TurnGuardInput {
+  /** The session binding reports the session as running. */
+  running: boolean
+  /** The session was removed. */
+  removed: boolean
+  /** The subagent mode, or null when the session is not a subagent. */
+  subagentMode: string | null
+  /** The session has a pending interaction (an approval or question awaiting an answer). */
+  pendingInteraction: boolean
+  /** The conversation publishes an open turn for the session. */
+  openTurn: boolean
+}
+
+/**
+ * Whether a turn may be cancelled now. This mirrors the built-in Escape guard in
+ * dsh-client-ui-conversation `lib/client.js` (the `currentTurn` check in
+ * `installStopShortcut`): the session must be running, not removed, not a
+ * non-continuable subagent, free of a pending interaction, and have an open turn.
+ * Barge-in and the stop button both go through this check.
+ *
+ * @param input - the session facts at the moment of the check.
+ * @returns true when a cancel may proceed.
+ */
+export function turnCancellable(input: TurnGuardInput): boolean {
+  return (
+    input.running &&
+    !input.removed &&
+    (input.subagentMode === null || input.subagentMode === 'continuable') &&
+    !input.pendingInteraction &&
+    input.openTurn
+  )
+}
+
 /** Recording-cap seconds, clamped to a safe range for display. */
 export function clampRecordSeconds(value: number, fallback: number): number {
   if (!Number.isFinite(value) || value <= 0) return fallback

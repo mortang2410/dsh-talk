@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
-import { planBargeIn, planStopPress, stopControlVisible } from '../src/client/present.ts'
+import { planBargeIn, planStopPress, stopControlVisible, turnCancellable } from '../src/client/present.ts'
 import { SPEECH_POLL_MS } from '../src/client/speechPoll.ts'
 import type { TalkAudio, TalkLatest, TalkStatus } from '../src/wire.ts'
 
@@ -62,11 +62,18 @@ class FakeAudio {
 
 interface TurnState {
   running: boolean
-  listeners: Array<(running: boolean) => void>
+  /** A pending interaction (an approval) awaits an answer on the session. */
+  pending: boolean
+  listeners: Array<(cancellable: boolean) => void>
   /** Session ids passed to cancelTurn, one entry per call. */
   cancels: string[]
 }
-let turn: TurnState = { running: false, listeners: [], cancels: [] }
+let turn: TurnState = { running: false, pending: false, listeners: [], cancels: [] }
+
+/** The turn signal the built-in guard gives (present.ts turnCancellable), with the session facts this spec sets. */
+function cancellable(): boolean {
+  return turnCancellable({ running: turn.running, removed: false, subagentMode: null, pendingInteraction: turn.pending, openTurn: turn.running })
+}
 
 let remoteLatest: TalkLatest | null = null
 let container: HTMLElement
@@ -102,14 +109,15 @@ function mount(): void {
     setDraft: () => {},
     send: async () => {},
     sessionId: SESSION,
-    watchTurn: (_sessionId: string, listener: (running: boolean) => void) => {
+    watchTurn: (_sessionId: string, listener: (cancellable: boolean) => void) => {
       turn.listeners.push(listener)
-      listener(turn.running)
+      listener(cancellable())
       return () => {
         turn.listeners = turn.listeners.filter((candidate) => candidate !== listener)
       }
     },
     cancelTurn: async (sessionId: string) => {
+      if (!cancellable()) return
       turn.cancels.push(sessionId)
     },
   }
@@ -135,7 +143,15 @@ async function advance(ms: number): Promise<void> {
 function setRunning(running: boolean): void {
   turn.running = running
   act(() => {
-    for (const listener of turn.listeners) listener(running)
+    for (const listener of turn.listeners) listener(cancellable())
+  })
+}
+
+/** Set or clear a pending interaction and notify the mounted button, as the session status does. */
+function setPending(pending: boolean): void {
+  turn.pending = pending
+  act(() => {
+    for (const listener of turn.listeners) listener(cancellable())
   })
 }
 
@@ -193,6 +209,35 @@ describe('stop control decisions (pure)', () => {
   })
 })
 
+describe('turnCancellable (the built-in Escape guard, pure)', () => {
+  const OPEN = { running: true, removed: false, subagentMode: null, pendingInteraction: false, openTurn: true }
+
+  it('allows a cancel when every guard passes, for a session or a continuable subagent', () => {
+    expect(turnCancellable(OPEN)).toBe(true)
+    expect(turnCancellable({ ...OPEN, subagentMode: 'continuable' })).toBe(true)
+  })
+
+  it('refuses when the session is not running', () => {
+    expect(turnCancellable({ ...OPEN, running: false })).toBe(false)
+  })
+
+  it('refuses when the session was removed', () => {
+    expect(turnCancellable({ ...OPEN, removed: true })).toBe(false)
+  })
+
+  it('refuses a subagent that is not continuable', () => {
+    expect(turnCancellable({ ...OPEN, subagentMode: 'oneshot' })).toBe(false)
+  })
+
+  it('refuses while a pending interaction awaits an answer', () => {
+    expect(turnCancellable({ ...OPEN, pendingInteraction: true })).toBe(false)
+  })
+
+  it('refuses when no turn is open', () => {
+    expect(turnCancellable({ ...OPEN, openTurn: false })).toBe(false)
+  })
+})
+
 describe('stop control (rendered button, stubbed player and turn services)', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -201,7 +246,7 @@ describe('stop control (rendered button, stubbed player and turn services)', () 
     vi.stubGlobal('Audio', FakeAudio)
     Object.assign(URL, { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} })
     FakeAudio.instances = []
-    turn = { running: false, listeners: [], cancels: [] }
+    turn = { running: false, pending: false, listeners: [], cancels: [] }
     remoteLatest = null
     clock = 0
     container = document.createElement('div')
@@ -258,6 +303,19 @@ describe('stop control (rendered button, stubbed player and turn services)', () 
     expect(FakeAudio.instances[0]?.pauses).toBe(1)
     expect(turn.cancels).toEqual([])
     expect(stopButton()).toBeNull()
+  })
+
+  it('with a pending interaction, the stop control does not cancel the turn, even on a second press', async () => {
+    mount()
+    await advance(0)
+    setRunning(true)
+    setPending(true)
+    expect(stopButton()).toBeNull()
+    await publish('u1')
+    pressStop()
+    expect(FakeAudio.instances[0]?.pauses).toBe(1)
+    pressStop()
+    expect(turn.cancels).toEqual([])
   })
 
   it('after a stop, the next reply plays normally', async () => {
