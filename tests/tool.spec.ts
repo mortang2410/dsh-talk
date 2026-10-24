@@ -186,8 +186,10 @@ describe('speakableText', () => {
     expect(speakableText('Read https://example.com/a/b today.')).toBe('Read today.')
   })
 
-  it('keeps ordinary prose, inline code words, and slashes between words', () => {
-    expect(speakableText('Use `pow2` and/or the 1/2 split.')).toBe('Use pow2 and/or the 1/2 split.')
+  it('keeps ordinary prose and slashes between words, and drops an inline code span', () => {
+    // An inline span is code, so the whole span goes rather than the backticks alone. The
+    // surrounding prose and a slash inside a word stay.
+    expect(speakableText('Use `pow2` and/or the 1/2 split.')).toBe('Use and/or the 1/2 split.')
   })
 
   it('returns an empty string when nothing speakable remains', () => {
@@ -211,5 +213,29 @@ describe('speakableText: the leaks the review probes found', () => {
   it('returns nothing when stripping leaves only punctuation', () => {
     // Breaks if: the caller is handed "..." and synthesizes it.
     expect(speakableText('```\ncode\n```\n...')).toBe('')
+  })
+})
+
+describe('speakableText: the cases the second review probe found', () => {
+  it('drops a fence opened on the same line as a list marker, and keeps the prose after it', () => {
+    expect(speakableText('- ```js\nconst a = 1\n```\nand then prose')).toBe('and then prose')
+    expect(speakableText('1. ```py\nprint(1)\n```\nafter')).toBe('after')
+  })
+
+  it('keeps a markdown link label and drops its target', () => {
+    expect(speakableText('see [the docs](https://example.com/x) for more')).toBe('see the docs for more')
+  })
+
+  it('drops an inline code span whole rather than leaving the bare word', () => {
+    expect(speakableText('call `speakableText` on it')).toBe('call on it')
+  })
+
+  it('drops a parenthesised absolute path with its parenthesis', () => {
+    expect(speakableText('open it (in /etc/hosts) and look')).toBe('open it (in and look')
+  })
+
+  it('drops a bare filename and a bare TLD', () => {
+    expect(speakableText('edit config.ts and rerun')).toBe('edit and rerun')
+    expect(speakableText('go to example.xyz now')).toBe('go to now')
   })
 })

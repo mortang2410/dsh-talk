@@ -156,7 +156,7 @@ export interface TtsConfig {
 export interface AnnounceConfig {
   /** Master switch for all event announcements (default true). */
   enabled?: boolean
-  /** Announce turn completion (default true). */
+  /** Announce turn completion (default false: the model speaks its own paraphrase). */
   onTurnEnd?: boolean
   /** Announce pending approvals (default true). */
   onApproval?: boolean

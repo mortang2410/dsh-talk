@@ -42,8 +42,8 @@ export function renderSpeak(args: { text: string }, value: {
   }]
 }
 
-/** A fenced code block opener or closer: a run of three backticks or tildes. */
-const FENCE_LINE = /^\s*(```|~~~)/u
+/** A fenced code block opener or closer: three backticks or tildes, after an optional list marker. */
+const FENCE_LINE = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?(```|~~~)/u
 
 /** A markdown table row or separator: two or more pipes, or one pipe with space on both sides. */
 function isTableLine(line: string): boolean {
@@ -79,10 +79,15 @@ export function speakableText(raw: string): string {
     kept.push(line)
   }
   const joined = kept.join(' ')
+    // A markdown link keeps its label and loses its target, before the URL rules run.
+    .replace(/\[([^\]]*)\]\([^)]*\)/gu, ' $1 ')
     .replace(/https?:\/\/\S+/giu, ' ')
     .replace(/(?<![\w.])www\.[\w.-]+\S*/giu, ' ')
-    .replace(/(?<![\w.])[\w-]+(?:\.(?:com|org|net|io|dev|ai|co|app|sh))\b\S*/giu, ' ')
-    .replace(/(?<=^|\s)(?:~|\.{1,2})?\/\S+/gu, ' ')
+    .replace(/(?<![\w.])[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|dev|ai|co|app|sh|me|info|xyz|gov|edu|uk|de|fr|jp|cn)\b\S*/giu, ' ')
+    // An inline code span is code: drop it whole rather than leave the bare word behind.
+    .replace(/`[^`]*`/gu, ' ')
+    .replace(/(?<![\w/.-])[\w-]+\.(?:ts|tsx|js|mjs|json|md|py|sh|ya?ml|toml|txt|csv|lock)\b/giu, ' ')
+    .replace(/(?<=^|[\s(])(?:~|\.{1,2})?\/\S+\)?/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]{1,8}(?![\w/])/gu, ' ')
     .replace(/(?<![\w/.-])[\w.-]+(?:\/[\w.-]+){2,}(?![\w/])/gu, ' ')
     .replace(/`/gu, '')
