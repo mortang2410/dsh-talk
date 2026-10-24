@@ -157,10 +157,13 @@ describe('speak tool', () => {
   })
 
   it('speaks the prose of a text that mixes a code block with a sentence', async () => {
-    const harness = await mountHarness()
-    const result = await callTool(harness, { text: 'Here is the fix.\n```ts\nconst x = 1\n```\nRun it after the reload.', engine: 'browser' })
-    expect(result.isError).toBe(false)
-    expect(speakableText('Here is the fix.\n```ts\nconst x = 1\n```\nRun it after the reload.')).toBe('Here is the fix. Run it after the reload.')
+    await withKnownSpeechVocabulary(async () => {
+      const harness = await mountHarness()
+      const result = await callTool(harness, { text: 'Here is the fix.\n```ts\nconst x = 1\n```\nRun it after the reload.', engine: 'browser' })
+      expect(result.isError).toBe(false)
+      const data = (harness.session.snapshotEvents().filter(event => event.type === 'dsh-talk/speech').at(-1)?.data ?? {}) as { text?: string }
+      expect(data.text).toBe('Here is the fix. Run it after the reload.')
+    })
   })
 })
 
