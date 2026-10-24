@@ -40,18 +40,38 @@ export const PLAYBACK_MARGIN_MS = 5_000
 /**
  * Browser-voice ceiling per character, in milliseconds, at rate 1. Deliberately
  * slower than real speech (about 4 to 5 characters per second for Chinese, so
- * about 200 to 250 ms per character): the ceiling only fires for an engine that
- * never ends its speech, and the speaking poll ends a normal reply.
+ * about 200 to 250 ms per character). The ceiling is an inactivity timeout: it
+ * re-arms on every speaking read that is true, so it fires only once the engine
+ * stops reporting speech for that long.
  */
 export const CEILING_MS_PER_CHAR = 300
 
-/** Longest browser-voice ceiling, in milliseconds: the hard clamp on a wedged engine's hold. */
+/**
+ * Longest browser-voice inactivity ceiling, in milliseconds. It is not a
+ * deadline on the reply: a true speaking read re-arms it, so a long reply is
+ * held for as long as the engine keeps reporting speech.
+ */
 export const PLAYBACK_CEILING_MAX_MS = 600_000
 
 /**
+ * Absolute bound on one browser reply, in milliseconds. It finishes the reply
+ * even when the speaking flag stays true forever, so the speaking poll always
+ * stops. Far beyond any real reply: the spoken answer is capped at four
+ * sentences, so a reply that speaks this long is a wedged engine.
+ */
+export const PLAYBACK_ABSOLUTE_MAX_MS = 900_000
+
+/**
+ * Milliseconds after `speak()` after which a browser reply counts as started
+ * when the engine never fires `onstart`. The speaking flag is page-wide, so
+ * it is trusted for this utterance only after the utterance has started.
+ */
+export const ENGINE_START_FALLBACK_MS = 2_000
+
+/**
  * Milliseconds between reads of `speechSynthesis.speaking` while a browser
- * reply is spoken. The reply ends on the first read that is false after a read
- * that was true.
+ * reply is spoken. The reply ends on the first false read after the utterance
+ * has started (see {@link ENGINE_START_FALLBACK_MS} for engines without `onstart`).
  */
 export const SPEAKING_POLL_MS = 250
 
@@ -73,8 +93,10 @@ export interface SpeechPollDeps {
    * Calls onDuration with an upper bound in seconds before speaking, so the
    * chain is bounded even when the engine never reports the end. The bound is
    * not the expected length: the speech itself normally ends the wait first.
+   * The third argument reports whether the chain has moved on (its bound
+   * elapsed or the task settled), so the task can stop working once it is true.
    */
-  speakText(text: string, onDuration: (seconds: number) => void): Promise<void>
+  speakText(text: string, onDuration: (seconds: number) => void, released: () => boolean): Promise<void>
   /**
    * Play decoded audio; resolves when playback ends, fails, pauses or aborts.
    * Calls onDuration with the length in seconds once the player knows it.
@@ -257,7 +279,7 @@ export function startSpeechPoll(sessionId: string, deps: SpeechPollDeps, interva
     remember(latest.utteranceId)
     if (latest.engine === 'browser') {
       const text = latest.text
-      enqueue((ctx) => deps.speakText(text, ctx.onDuration))
+      enqueue((ctx) => deps.speakText(text, ctx.onDuration, ctx.released))
       return
     }
     enqueueAudio(latest.utteranceId)

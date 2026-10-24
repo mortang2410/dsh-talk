@@ -20,6 +20,8 @@ import { advanceSilence, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import {
   CEILING_MS_PER_CHAR,
+  ENGINE_START_FALLBACK_MS,
+  PLAYBACK_ABSOLUTE_MAX_MS,
   PLAYBACK_CAP_MS,
   PLAYBACK_CEILING_MAX_MS,
   SPEAKING_POLL_MS,
@@ -117,24 +119,34 @@ function supportedMime(): string | undefined {
   return undefined
 }
 
+/** What one mount has learned about the browser engine: whether it fires `onstart`. */
+interface BrowserEngineState {
+  firesStart: boolean
+}
+
 /**
  * Speak text with the browser voice. Settings come from the `talk/status`
  * snapshot (`tts.browser`): `talk/latest` carries no per-call voice, rate or
  * pitch, so a speak-tool `voice` override is not applied on this path.
  *
- * The reply ends on the first of three signals: the utterance's `end` or
- * `error`, or `speechSynthesis.speaking` going false after it was seen true
- * (polled every SPEAKING_POLL_MS). The poll's "seen true first" guard keeps an
- * engine whose `speaking` never turns true from cutting the reply off at once.
+ * The reply ends on the first of four signals: the utterance's `end` or
+ * `error`, the absolute cap (PLAYBACK_ABSOLUTE_MAX_MS), or
+ * `speechSynthesis.speaking` going false once the utterance has started. The
+ * flag is page-wide, so it counts only after this utterance's `onstart`, or
+ * after ENGINE_START_FALLBACK_MS from `speak()` when the engine never fires
+ * `onstart` and the flag has been seen true. The poll stops once `released`
+ * reports that the chain has moved on.
  *
- * Before speaking, `onDuration` receives an upper bound in seconds: the
- * ceiling `min(PLAYBACK_CEILING_MAX_MS, max(PLAYBACK_CAP_MS, text.length *
- * CEILING_MS_PER_CHAR / rate))`. The bound only matters when no signal above
- * arrives, so it is sized to hold a slow voice and to clamp a wedged engine.
+ * Before speaking, `onDuration` receives an inactivity ceiling in seconds:
+ * `min(PLAYBACK_CEILING_MAX_MS, max(PLAYBACK_CAP_MS, text.length *
+ * CEILING_MS_PER_CHAR / rate))`. Every poll read that is true passes it again,
+ * so the bound fires only when the flag stops reporting speech for that long.
  *
  * @param text - the sanitized utterance text from `talk/latest`.
  * @param delivery - the browser delivery settings, when the snapshot has loaded.
- * @param onDuration - receives the upper bound in seconds before speaking.
+ * @param onDuration - receives the inactivity ceiling in seconds, now and on each true read.
+ * @param released - true once the chain has moved on; the poll stops then.
+ * @param engine - this mount's record of whether the engine fires `onstart`.
  * @returns a promise that resolves when the speech ends or fails, so the poller
  *   can keep it in order with the audio replies.
  */
@@ -142,6 +154,8 @@ function speakWithBrowserVoice(
   text: string,
   delivery: TalkStatus['tts']['browser'] | undefined,
   onDuration: (seconds: number) => void,
+  released: () => boolean,
+  engine: BrowserEngineState,
 ): Promise<void> {
   if (typeof speechSynthesis === 'undefined') {
     console.warn('[dsh-talk] speechSynthesis unavailable')
@@ -160,34 +174,58 @@ function speakWithBrowserVoice(
       PLAYBACK_CEILING_MAX_MS,
       Math.max(PLAYBACK_CAP_MS, (text.length * CEILING_MS_PER_CHAR) / rate),
     )
-    onDuration(ceilingMs / 1000)
+    const ceilingSeconds = ceilingMs / 1000
+    onDuration(ceilingSeconds)
     let finished = false
+    let started = false
+    let fallbackDue = false
+    let seenSpeaking = false
     let timer: ReturnType<typeof setInterval> | undefined
+    let startFallback: ReturnType<typeof setTimeout> | undefined
+    let absoluteCap: ReturnType<typeof setTimeout> | undefined
+    // Every path ends here, so the poll and both timers are always cleared.
     const finish = (): void => {
       if (finished) return
       finished = true
       if (timer !== undefined) clearInterval(timer)
+      if (startFallback !== undefined) clearTimeout(startFallback)
+      if (absoluteCap !== undefined) clearTimeout(absoluteCap)
       resolve()
+    }
+    utterance.onstart = () => {
+      started = true
+      engine.firesStart = true
     }
     utterance.onend = finish
     utterance.onerror = finish
     speechSynthesis.speak(utterance)
     // The utterance may have ended synchronously; never start a poll after that.
     if (finished) return
-    let seenSpeaking = false
+    startFallback = setTimeout(() => {
+      fallbackDue = true
+    }, ENGINE_START_FALLBACK_MS)
+    absoluteCap = setTimeout(finish, PLAYBACK_ABSOLUTE_MAX_MS)
     timer = setInterval(() => {
+      // The chain has moved on (its bound elapsed): stop reading the flag.
+      if (released()) {
+        finish()
+        return
+      }
       let speaking: boolean
       try {
         speaking = speechSynthesis.speaking === true
       } catch {
-        // An unreadable flag is not a finished reply: wait for the next read or the ceiling.
+        // An unreadable flag is not a finished reply: wait for the next read, the ceiling or the cap.
         return
       }
       if (speaking) {
         seenSpeaking = true
+        // Re-arm the chain's bound: the ceiling is an inactivity timeout, not a deadline.
+        onDuration(ceilingSeconds)
         return
       }
-      if (seenSpeaking) finish()
+      // The fallback applies only to an engine that has never fired `onstart`.
+      if (started || (seenSpeaking && fallbackDue && !engine.firesStart)) finish()
     }, SPEAKING_POLL_MS)
   })
 }
@@ -558,10 +596,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   // does write the event, both paths would play the same reply twice.
   useEffect(() => {
     if (typeof sessionIdProp !== 'string' || sessionIdProp === '') return undefined
+    // Per mount: once this page's engine has fired `onstart`, the start fallback is off.
+    const browserEngine: BrowserEngineState = { firesStart: false }
     return startSpeechPoll(sessionIdProp, {
       latest,
       audio,
-      speakText: (text, onDuration) => speakWithBrowserVoice(text, settingsRef.current?.tts.browser, onDuration),
+      speakText: (text, onDuration, released) =>
+        speakWithBrowserVoice(text, settingsRef.current?.tts.browser, onDuration, released, browserEngine),
       playAudio: playAudioEntry,
       isHidden: () => typeof document !== 'undefined' && document.hidden,
       onVisibilityChange: (listener) => {

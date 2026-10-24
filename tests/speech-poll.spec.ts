@@ -67,7 +67,7 @@ function stubRemote() {
       audioRequests.push(utteranceId)
       return evicted.has(utteranceId) ? null : audioFor(utteranceId)
     },
-    speakText: async (text) => {
+    speakText: async (text, _onDuration, _released) => {
       spoken.push(text)
     },
     playAudio: async (entry) => {
