@@ -1,8 +1,10 @@
 /**
- * The composer microphone button: record with MediaRecorder, transcribe with
- * the browser's Web Speech API when available (interim results included) or
- * through the host's `talk/transcribe` for the local engines, fill the draft
- * (or send directly when auto-submit is on), and play each new utterance of
+ * The composer microphone button: when the host resolved the `web` STT engine,
+ * transcribe with the browser's Web Speech API (interim results included);
+ * otherwise record with MediaRecorder, convert the recording to 16 kHz mono WAV
+ * (wav.ts), and send it through the host's `talk/transcribe` to the local engine.
+ * Either way the result fills the draft (or sends directly when auto-submit is
+ * on), and play each new utterance of
  * this session by polling `talk/latest` (browser voice for the browser engine,
  * cached audio through `talk/audio` for the local engines; see `speechPoll.ts`).
  * Pressing record also interrupts host playback (speak-to-interrupt).
@@ -17,6 +19,7 @@ import { foldMic, initMic, type MicViewModel } from './present.ts'
 import { advanceSilence, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import { startSpeechPoll } from './speechPoll.ts'
+import { recordingToWav16kMono } from './wav.ts'
 import type { TalkAudio, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript } from '../wire.ts'
 
 /** Registration-side injected face: the recorder's host/browser bindings. */
@@ -78,6 +81,21 @@ function webRecognition(): SpeechRecognitionLike | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Base64 of raw bytes, for the `talk/transcribe` wire field. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+  }
+  return btoa(binary)
+}
+
+/** A failure's message, whitespace collapsed and capped so it fits the composer. */
+function detailOf(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  return raw.replace(/\s+/gu, ' ').trim().slice(0, 200)
 }
 
 function supportedMime(): string | undefined {
@@ -221,14 +239,33 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
   }, [status])
 
+  // Silence is not an error: an empty transcript leaves the composer as it was.
   const finishWithText = (text: string): void => {
     const trimmed = text.trim()
-    setMic(foldMic(micRef.current, trimmed === '' ? { kind: 'failed', message: 'empty transcription' } : { kind: 'transcribed', text: trimmed }))
+    setMic(foldMic(micRef.current, trimmed === '' ? { kind: 'reset' } : { kind: 'transcribed', text: trimmed }))
     if (trimmed === '') return
     if (settingsRef.current?.record.autoSubmit === true) {
       void submitText(trimmed)
     } else {
       writeDraft(trimmed)
+    }
+  }
+
+  // Convert one MediaRecorder recording to 16 kHz mono WAV in the browser, post
+  // it to the host engine, and name the failing stage in the composer.
+  const transcribeRecording = async (blob: Blob): Promise<void> => {
+    let wav: Uint8Array
+    try {
+      wav = await recordingToWav16kMono(await blob.arrayBuffer())
+    } catch (error) {
+      setMic(foldMic(micRef.current, { kind: 'failed', message: `could not convert the recording to 16 kHz WAV: ${detailOf(error)}` }))
+      return
+    }
+    try {
+      const transcript = await transcribe(bytesToBase64(wav))
+      finishWithText(transcript.text)
+    } catch (error) {
+      setMic(foldMic(micRef.current, { kind: 'failed', message: `transcription failed: ${detailOf(error)}` }))
     }
   }
 
@@ -301,7 +338,10 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     if (snapshot === undefined || snapshot.record.enabled !== true) return
     // Speak-to-interrupt: starting to talk stops host playback.
     if (snapshot.interrupt) void interrupt()
-    const recognition = webRecognition()
+    // The browser's Web Speech runs only when the host resolved the 'web'
+    // engine. A FunASR or whisper profile must record and post the audio, or
+    // the configured engine never sees it.
+    const recognition = snapshot.stt.resolved === 'web' ? webRecognition() : undefined
     if (recognition !== undefined) {
       // An 'auto' language must not assign the empty string: Chrome handles
       // '' badly on some setups (observed as a silent immediate no-speech).
@@ -361,6 +401,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       }
       recognition.onerror = (event) => {
         clearSilence()
+        // 'no-speech' is silence: onend still follows and finishes with no text and no error.
+        if (event.error === 'no-speech') return
         recognitionFailed = true
         recognitionRef.current = null
         setRecording(false)
@@ -408,18 +450,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       stream.getTracks().forEach(track => track.stop())
       const blob = new Blob(chunksRef.current, { type: mime })
       chunksRef.current = []
-      void blob.arrayBuffer().then(buffer => {
-        let binary = ''
-        const bytes = new Uint8Array(buffer)
-        for (let index = 0; index < bytes.length; index += 0x8000) {
-          binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
-        }
-        return btoa(binary)
-      }).then(base64 => transcribe(base64))
-        .then(transcript => finishWithText(transcript.text))
-        .catch(() => {
-          setMic(foldMic(micRef.current, { kind: 'failed', message: 'transcription failed' }))
-        })
+      void transcribeRecording(blob)
     }
     recorderRef.current = recorder
     try {
@@ -494,19 +525,24 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     ? (mic.phase === 'transcribing' ? '…' : '⏹')
     : '🎙'
   return (
-    <button
-      type="button"
-      data-dsh-talk-mic
-      data-recording={recording ? 'true' : 'false'}
-      data-disabled={disabled ? 'true' : 'false'}
-      title={mic.phase === 'error' ? mic.error : undefined}
-      disabled={disabled}
-      onClick={() => {
-        if (recording) stop()
-        else start()
-      }}
-    >
-      {label}
-    </button>
+    <>
+      <button
+        type="button"
+        data-dsh-talk-mic
+        data-recording={recording ? 'true' : 'false'}
+        data-disabled={disabled ? 'true' : 'false'}
+        title={mic.phase === 'error' ? mic.error : undefined}
+        disabled={disabled}
+        onClick={() => {
+          if (recording) stop()
+          else start()
+        }}
+      >
+        {label}
+      </button>
+      {mic.phase === 'error' && mic.error !== undefined
+        ? <span data-dsh-talk-mic-error role="alert">{mic.error}</span>
+        : null}
+    </>
   )
 }

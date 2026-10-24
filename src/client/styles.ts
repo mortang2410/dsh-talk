@@ -34,6 +34,11 @@ export function installTalkStyles(): () => void {
       opacity: 0.45;
       cursor: default;
     }
+    [data-dsh-talk-mic-error] {
+      color: #d33;
+      font-size: 0.85em;
+      align-self: center;
+    }
     [data-dsh-talk-settings] {
       display: flex;
       flex-direction: column;
