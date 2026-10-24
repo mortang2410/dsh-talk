@@ -17,7 +17,6 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '../projection.ts'
 import { foldMic, initMic, type MicViewModel } from './present.ts'
 import { advanceSilence, CAPTURE_SILENCE_TIMEOUT_MS, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
-import { healTranscript } from '../heal.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import {
   CEILING_MS_PER_CHAR,
@@ -29,7 +28,7 @@ import {
   startSpeechPoll,
 } from './speechPoll.ts'
 import { recordingToWav16kMono } from './wav.ts'
-import type { TalkAudio, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript } from '../wire.ts'
+import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript } from '../wire.ts'
 
 /** Registration-side injected face: the recorder's host/browser bindings. */
 export interface TalkMicInjected {
@@ -39,6 +38,8 @@ export interface TalkMicInjected {
   interrupt: () => Promise<TalkInterruptResult>
   /** Host transcription for the local STT engines. */
   transcribe: (audioData: string) => Promise<TalkTranscript>
+  /** Heal the accumulated raw transcript on the host; the host makes the one model call. */
+  heal: (rawTranscript: string) => Promise<TalkHeal>
   /** Serve one cached utterance's audio. */
   audio: (utteranceId: string) => Promise<TalkAudio | null>
   /** Read the newest utterance of one session (playback poll). */
@@ -389,7 +390,7 @@ function playAudioEntry(entry: TalkAudio, onDuration: (seconds: number) => void)
  * @returns the button element.
  */
 export function TalkMicButton(props: TalkMicProps): ReactNode {
-  const { status, interrupt, transcribe, audio, latest, setDraft, send, forSession } = props
+  const { status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession } = props
   const inputActions = (props as Partial<Record<'inputActions', RuntimeInputActions>>).inputActions
   const sessionIdProp = (props as Partial<Record<'sessionId', unknown>>).sessionId
   const writeDraft = (text: string): void => {
@@ -578,11 +579,12 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     const text = raw.trim()
     if (text === '') return
     capture.accumulated = capture.accumulated === '' ? text : `${capture.accumulated} ${text}`
-    let decision: Awaited<ReturnType<typeof healTranscript>>
+    let decision: TalkHeal
     try {
-      decision = await healTranscript(capture.accumulated)
+      // The host runs the one model call (and its literal-phrase fallback) on the accumulated text.
+      decision = await heal(capture.accumulated)
     } catch (error) {
-      // The fallback already ran inside healTranscript and missed: keep the capture open.
+      // The host's fallback already ran and missed (or the call failed): keep the capture open.
       setMic(foldMic(micRef.current, { kind: 'failed', message: `heal failed: ${detailOf(error)}` }))
       return
     }

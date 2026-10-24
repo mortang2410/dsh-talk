@@ -64,7 +64,11 @@ export interface RecordConfig {
   enabled?: boolean
   /** Optional toggle hotkey such as "alt+r"; unset = click only. */
   hotkey?: string | null
-  /** Recording cap in seconds (default 60). */
+  /**
+   * Recording cap in seconds (default 60). It caps only the legacy single recording
+   * (voice-activity detection off, or no AudioContext). A segmented capture does not
+   * stop at it: that capture ends on the heal trigger or after 120 seconds of silence.
+   */
   maxSeconds?: number
   /** Submit the transcription as the user message automatically (default false). */
   autoSubmit?: boolean

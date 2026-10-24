@@ -12,10 +12,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
-import type { TalkStatus, TalkTranscript } from '../src/wire.ts'
+import { healTranscript } from '../src/heal.ts'
+import type { TalkHeal, TalkStatus, TalkTranscript } from '../src/wire.ts'
 
 const TICK_MS = 500
 const SPEECH_LEVEL = 0.2
+/**
+ * The model endpoint as the host sees it. The host's `talk/heal` runs `healTranscript`
+ * against it; the browser must never fetch it, and nothing here points at port 8082.
+ */
+const HOST_MODEL_URL = 'http://host-model.test/v1/chat/completions'
 
 const SETTINGS: TalkStatus = {
   stt: { engine: 'funasr', resolved: 'funasr', language: 'en-US', silenceFinaliseMs: 1500, funasrUrl: 'http://127.0.0.1:8002', whisperModel: null },
@@ -40,11 +46,15 @@ const recorders: FakeRecorder[] = []
 const transcribed: string[] = []
 /** Ordered event trace: segment raw logs and heal calls. */
 const events: string[] = []
+/** Every `talk/heal` call the browser made, in order: the accumulated transcript it sent. */
+const healCalls: string[] = []
+/** Every URL the browser fetched. A correct browser fetches only the host's model call, once per heal. */
+const fetched: string[] = []
 /** Transcripts the stubbed transcriber returns, one per call. */
 let transcriptQueue: string[] = []
 /** The microphone level the stubbed analyser reports. */
 let micLevel = 0
-/** What the stubbed heal endpoint does: answer like the model, or fail. */
+/** What the host's model call does: answer like the model, or fail (the host fallback then decides). */
 let healMode: 'model' | 'error' = 'model'
 /** Text the button wrote into the composer draft. */
 const drafts: string[] = []
@@ -116,8 +126,14 @@ class FakeOfflineAudioContext {
   }
 }
 
-/** The stubbed heal endpoint: answers like the model (phrase must end the transcript) or errors. */
-async function fakeFetch(_url: string, init?: { body?: string }): Promise<unknown> {
+/**
+ * The stubbed global `fetch`. Only the host's model URL answers; any other URL, such as the
+ * loopback `127.0.0.1:8082`, is recorded and fails, so a browser-side heal call shows up in
+ * `fetched` and breaks the test that checks it.
+ */
+async function fakeFetch(url: string, init?: { body?: string }): Promise<unknown> {
+  fetched.push(url)
+  if (url !== HOST_MODEL_URL) return { ok: false, status: 599, text: async () => '' }
   const body = JSON.parse(init?.body ?? '{}') as { messages: Array<{ content: string }> }
   const raw = (body.messages[1]?.content ?? '').replace(/^raw transcript: /u, '')
   events.push(`heal:${raw}`)
@@ -128,12 +144,31 @@ async function fakeFetch(_url: string, init?: { body?: string }): Promise<unknow
   return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) }
 }
 
+/**
+ * The host's `talk/heal`, as the wire delivers it: the real `healTranscript` against the
+ * host model URL, with a failure reaching the browser as a failed call (its message is
+ * the one `src/service.ts` produces through the wire).
+ */
+async function hostHeal(rawTranscript: string): Promise<TalkHeal> {
+  healCalls.push(rawTranscript)
+  try {
+    const decision = await healTranscript(rawTranscript, { endpoint: HOST_MODEL_URL, logRawTranscript: () => {} })
+    return { trigger: decision.trigger, prompt: decision.prompt, source: decision.source }
+  } catch (error) {
+    throw new Error(`talk.heal failed: INTERNAL: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 let container: HTMLElement
 let root: Root | undefined
 
-function mount(): void {
+/** The legacy single recording: voice-activity detection off, so no AnalyserNode and no segments. */
+const LEGACY_SETTINGS: TalkStatus = { ...SETTINGS, record: { ...SETTINGS.record, vad: { ...SETTINGS.record.vad, enabled: false } } }
+
+function mount(settings: TalkStatus = SETTINGS): void {
   const props = {
-    status: async () => SETTINGS,
+    status: async () => settings,
+    heal: hostHeal,
     interrupt: async () => ({ stopped: false }),
     transcribe: async (audioData: string): Promise<TalkTranscript> => {
       transcribed.push(audioData)
@@ -211,6 +246,8 @@ beforeEach(() => {
   recorders.length = 0
   transcribed.length = 0
   events.length = 0
+  healCalls.length = 0
+  fetched.length = 0
   drafts.length = 0
   sent.length = 0
   transcriptQueue = []
@@ -233,8 +270,8 @@ beforeEach(() => {
   document.body.append(container)
 })
 
-async function mountAndSettle(): Promise<void> {
-  mount()
+async function mountAndSettle(settings: TalkStatus = SETTINGS): Promise<void> {
+  mount(settings)
   await flush()
 }
 
@@ -386,5 +423,70 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
       'segment:second sentence',
       'heal:first sentence second sentence',
     ])
+  })
+
+  it('a segmented capture outlives record.maxSeconds and still ends on the trigger', async () => {
+    transcriptQueue = ['first sentence', 'second sentence that is my prompt']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await advance(62_000)
+    expect(recording()).toBe(true)
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['first sentence second sentence'])
+    expect(recording()).toBe(false)
+    expect(drafts).toEqual([])
+  })
+
+  it('the legacy single recording (voice-activity detection off) still stops at record.maxSeconds', async () => {
+    transcriptQueue = ['legacy recording']
+    await mountAndSettle(LEGACY_SETTINGS)
+    await startCapture()
+    await advance(59_000)
+    expect(recording()).toBe(true)
+    await advance(2000)
+    expect(recording()).toBe(false)
+    expect(drafts).toEqual(['legacy recording'])
+    expect(healCalls).toEqual([])
+  })
+
+  it('sends the accumulated transcript to the host heal route, and the browser never fetches the heal endpoint', async () => {
+    transcriptQueue = ['first sentence', 'second sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    expect(healCalls).toEqual(['first sentence', 'first sentence second sentence'])
+    expect(fetched).toEqual(healCalls.map(() => HOST_MODEL_URL))
+    expect(fetched.filter(url => url.includes(':8082'))).toEqual([])
+  })
+
+  it('a trigger from the host heal route submits the cleaned prompt and closes the capture', async () => {
+    transcriptQueue = ['first sentence that is my prompt']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['first sentence'])
+    expect(recording()).toBe(false)
+    expect(healCalls).toEqual(['first sentence that is my prompt'])
+  })
+
+  it('a HealFailure from the host heal route shows its error and keeps the capture open', async () => {
+    healMode = 'error'
+    transcriptQueue = ['first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(recording()).toBe(true)
+    expect(sent).toEqual([])
+    expect(errorText()).toBe(
+      'heal failed: talk.heal failed: INTERNAL: heal call failed (endpoint responded 500) and the transcript does not end with the trigger phrase',
+    )
   })
 })

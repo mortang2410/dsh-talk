@@ -279,6 +279,27 @@ export const TALK_LATEST_SCHEMA = z.object({
   interrupted: z.literal(true).optional(),
 })
 
+/**
+ * Result of `talk/heal`: the host's trigger decision for the accumulated raw
+ * transcript. `trigger` is true when the speaker ended it with the trigger phrase;
+ * `prompt` is the cleaned text without the phrase; `source` names which path decided.
+ */
+export interface TalkHeal {
+  /** True when the speaker ended the transcript with the trigger phrase. */
+  trigger: boolean
+  /** The cleaned prompt; the trigger phrase is removed when `trigger` is true. */
+  prompt: string
+  /** `model` when the host's model call answered; `fallback` when the literal-phrase check decided. */
+  source: 'model' | 'fallback'
+}
+
+/** Strict wire schema for {@link TalkHeal}. */
+export const TALK_HEAL_SCHEMA = z.object({
+  trigger: z.boolean(),
+  prompt: z.string(),
+  source: z.union([z.literal('model'), z.literal('fallback')]),
+})
+
 /** Frozen source position both faces carry (diagnostics only). */
 const SOURCE = Object.freeze({ file: 'src/wire.ts', line: 1, column: 1 })
 
@@ -325,6 +346,26 @@ export const TALK_TRANSCRIBE_DESCRIPTOR = Object.freeze({
     codec: strictWire('dsh-talk/types#TalkTranscribeAudioData', z.string()),
   } satisfies InvocationDescriptor['parameters'][number])]),
   result: strictWire('dsh-talk/types#TalkTranscript', TALK_TRANSCRIPT_SCHEMA),
+  sourceLocation: SOURCE,
+} as const) satisfies InvocationDescriptor
+
+/**
+ * The `talk/heal` invocation descriptor. The host runs the one local heal call
+ * (`src/heal.ts`) because the browser cannot reach the model's loopback endpoint.
+ */
+export const TALK_HEAL_DESCRIPTOR = Object.freeze({
+  id: 'dsh-talk#talk/heal',
+  service: 'talk',
+  namespace: 'talk',
+  method: 'heal',
+  invocation: Object.freeze({ kind: 'direct' }),
+  parameters: Object.freeze([Object.freeze({
+    name: 'rawTranscript',
+    wire: 'rawTranscript',
+    source: 'json',
+    codec: strictWire('dsh-talk/types#TalkHealRawTranscript', z.string()),
+  } satisfies InvocationDescriptor['parameters'][number])]),
+  result: strictWire('dsh-talk/types#TalkHeal', TALK_HEAL_SCHEMA),
   sourceLocation: SOURCE,
 } as const) satisfies InvocationDescriptor
 
@@ -388,6 +429,7 @@ export const TALK_INVOCATIONS = Object.freeze([
   TALK_STATUS_DESCRIPTOR,
   TALK_AUDIO_DESCRIPTOR,
   TALK_TRANSCRIBE_DESCRIPTOR,
+  TALK_HEAL_DESCRIPTOR,
   TALK_APPLY_SETTINGS_DESCRIPTOR,
   TALK_INTERRUPT_DESCRIPTOR,
   TALK_LATEST_DESCRIPTOR,

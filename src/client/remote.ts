@@ -12,6 +12,7 @@ import type { RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-ty
 import { TALK_INVOCATIONS } from '../wire.ts'
 import type {
   TalkAudio,
+  TalkHeal,
   TalkInterruptResult,
   TalkLatest,
   TalkSettingsInput,
@@ -28,6 +29,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     audio: (utteranceId: string) => Promise<RemoteResult<TalkAudio | null>>
     /** Transcribe one base64 WAV with the configured local STT engine. */
     transcribe: (audioData: string) => Promise<RemoteResult<TalkTranscript>>
+    /** Heal the accumulated raw transcript on the host and decide the trigger phrase. */
+    heal: (rawTranscript: string) => Promise<RemoteResult<TalkHeal>>
     /** Apply the settings panel's edits as an append-only profile patch operation. */
     applySettings: (settings: TalkSettingsInput) => Promise<RemoteResult<TalkSettingsResult>>
     /** Stop in-flight host synthesis (the user started talking). */
@@ -39,6 +42,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'talk/status': () => Promise<RemoteResult<TalkStatus>>
     'talk/audio': (utteranceId: string) => Promise<RemoteResult<TalkAudio | null>>
     'talk/transcribe': (audioData: string) => Promise<RemoteResult<TalkTranscript>>
+    'talk/heal': (rawTranscript: string) => Promise<RemoteResult<TalkHeal>>
     'talk/applySettings': (settings: TalkSettingsInput) => Promise<RemoteResult<TalkSettingsResult>>
     'talk/interrupt': () => Promise<RemoteResult<TalkInterruptResult>>
     'talk/latest': (sessionId: string, signal?: AbortSignal) => Promise<RemoteResult<TalkLatest | null>>

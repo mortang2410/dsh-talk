@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type { Config, ResolvedConfig, TtsEngine } from './config.ts'
 import { resolveConfig } from './config.ts'
 import { EngineFailure, synthesize, transcribeFunasr, transcribeWhisper } from './engine.ts'
+import { healTranscript } from './heal.ts'
 import { sanitizeText } from './sanitize.ts'
 import {
   appendSettingsFragment,
@@ -29,7 +30,7 @@ import {
 } from './settings-patch.ts'
 import { appendSpeechEvent } from './speech.ts'
 import type { DshTalkSpeechEvent, SpeechReason, SpeechTtsEngine } from './speech.ts'
-import type { TalkAudio, TalkInterruptResult, TalkLatest, TalkSettingsInput, TalkSettingsResult, TalkStatus, TalkTranscript } from './wire.ts'
+import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkSettingsInput, TalkSettingsResult, TalkStatus, TalkTranscript } from './wire.ts'
 
 /** Profile patch-layer filename the settings panel appends to. */
 const PROFILE_PATCH_FILENAME = 'cordis.patch.yml'
@@ -457,6 +458,20 @@ export class TalkService extends TypertRemoteService {
       ? await transcribeWhisper(this.ctx.subprocess, this.resolved, wav, this.resolved.sttLanguage, new AbortController().signal)
       : await transcribeFunasr(this.resolved, wav, new AbortController().signal)
     return { text, engine, language: this.resolved.sttLanguage }
+  }
+
+  /**
+   * Heal the accumulated raw transcript of one segmented capture and decide the
+   * trigger phrase, with one call to the host's local model (`src/heal.ts`) using
+   * its own endpoint and timeout. A `HealFailure` throws, so the client receives a
+   * failure and keeps its capture open, the same as a failed `transcribe`.
+   *
+   * @param rawTranscript - the accumulated raw transcript from the client.
+   * @returns the trigger decision, the cleaned prompt and the deciding source.
+   */
+  async heal(rawTranscript: string): Promise<TalkHeal> {
+    const decision = await healTranscript(rawTranscript)
+    return { trigger: decision.trigger, prompt: decision.prompt, source: decision.source }
   }
 
   /** Stop every in-flight local synthesis (the user started talking). */

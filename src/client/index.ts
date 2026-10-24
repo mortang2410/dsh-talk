@@ -30,6 +30,7 @@ import { TALK_REMOTE } from './remote.ts'
 import { installTalkStyles } from './styles.ts'
 import type {
   TalkAudio,
+  TalkHeal,
   TalkInterruptResult,
   TalkLatest,
   TalkSettingsInput,
@@ -99,6 +100,8 @@ export async function apply(ctx: Context): Promise<void> {
       unwrap<TalkInterruptResult>(await talk.interrupt(), 'interrupt')
     const transcribe: TalkMicInjected['transcribe'] = async (audioData) =>
       unwrap<TalkTranscript>(await talk.transcribe(audioData), 'transcribe')
+    const heal: TalkMicInjected['heal'] = async (rawTranscript) =>
+      unwrap<TalkHeal>(await talk.heal(rawTranscript), 'heal')
     const audio: TalkMicInjected['audio'] = async (utteranceId) =>
       unwrap<TalkAudio | null>(await talk.audio(utteranceId), 'audio')
     // The poll's signal reaches the RPC request, so a timed-out read is cancelled.
@@ -131,7 +134,7 @@ export async function apply(ctx: Context): Promise<void> {
       name: 'conversation.input.left',
       id: 'talk-mic',
       order: 20,
-      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, audio, latest, setDraft, send, forSession }),
+      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, setDraft, send, forSession }),
     }, TalkMicButton))
 
     slots.inject('settings.plugins.tab', () => slots.register({
