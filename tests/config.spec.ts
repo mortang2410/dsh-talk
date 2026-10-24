@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Config, resolveConfig, MAX_RECORD_SECONDS } from '../src/config.ts'
-import { resolveSttEngine } from '../src/service.ts'
+import { resolveSttEngine, resolveTtsEngine } from '../src/service.ts'
 
 describe('Config schema', () => {
   it('fills every leaf default on an empty input', () => {
@@ -99,5 +99,25 @@ describe('STT engine with blank endpoints', () => {
   it('rejects funasr and whisper selected with blank endpoints', () => {
     expect(() => resolveConfig({ stt: { engine: 'funasr', funasr: { url: '' } } })).toThrow(/funasr.url is not set/u)
     expect(() => resolveConfig({ stt: { engine: 'whisper', whisper: { modelPath: '' } } })).toThrow(/whisper.modelPath is not set/u)
+  })
+})
+
+describe('TTS engine with a blank piper model path', () => {
+  // cordis.patch.yml ships tts.piper.modelPath as ''. A blank value means "not
+  // configured": auto must resolve to edge-tts, not piper.
+  it('resolves the shipped default (auto, blank modelPath) to edge-tts', () => {
+    const resolved = resolveConfig({ tts: { engine: 'auto', piper: { modelPath: '' } } })
+    expect(resolved.piperModelPath).toBeNull()
+    expect(resolveTtsEngine(undefined, resolved)).toBe('edge-tts')
+  })
+
+  it('rejects piper selected with a blank modelPath', () => {
+    expect(() => resolveConfig({ tts: { engine: 'piper', piper: { modelPath: '' } } })).toThrow(/piper.modelPath is not set/u)
+  })
+
+  it('still resolves auto to piper once a model is set', () => {
+    const resolved = resolveConfig({ tts: { engine: 'auto', piper: { modelPath: 'en.onnx' } } })
+    expect(resolved.piperModelPath).toBe('en.onnx')
+    expect(resolveTtsEngine(undefined, resolved)).toBe('piper')
   })
 })

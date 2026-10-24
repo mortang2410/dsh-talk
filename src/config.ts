@@ -340,8 +340,9 @@ function nullableStringOf(value: unknown, label: string): string | null {
 
 /**
  * A blank endpoint or model is "not configured". The shipped cordis.patch.yml
- * ships funasr.url, funasr.model and whisper.modelPath as '', so keeping '' as a
- * value would make `auto` pick funasr or whisper with nothing to call.
+ * ships funasr.url, funasr.model, whisper.modelPath and piper.modelPath as '', so
+ * keeping '' as a value would make `auto` pick funasr, whisper or piper with
+ * nothing to call.
  */
 function blankAsNull(value: string | null): string | null {
   return value === null || value.trim() === '' ? null : value
@@ -422,7 +423,7 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
   const edgeTtsVoice = stringOf(tts.edgeTts?.voice, 'en-US-JennyNeural', 'tts.edgeTts.voice')
   const piperCommand = stringOf(tts.piper?.command, 'piper', 'tts.piper.command')
   if (piperCommand.length === 0) throw new Error('dsh-talk: config.tts.piper.command must not be empty')
-  const piperModelPath = nullableStringOf(tts.piper?.modelPath, 'tts.piper.modelPath')
+  const piperModelPath = blankAsNull(nullableStringOf(tts.piper?.modelPath, 'tts.piper.modelPath'))
 
   // Cross-field consistency: an engine the user explicitly selected must be
   // fully addressable, or the row fails at load instead of at first use.
