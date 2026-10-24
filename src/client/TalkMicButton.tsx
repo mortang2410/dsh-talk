@@ -174,6 +174,14 @@ function readSpeaking(): boolean | null {
  *    This is a hold, not an overlap.
  * 3. A reply longer than PLAYBACK_ABSOLUTE_MAX_MS (900 s) is cut at the cap, so
  *    its tail is never spoken and the listener is not told.
+ * 4. An engine that fires `onstart` but never `onend` or `onerror` leaves
+ *    `thisSpeaking` true for good. If other speech then keeps the page flag true,
+ *    the cap can still cancel that other speech, because the flag cannot say
+ *    whose it is. There is no in-page fix for this: the only signal the platform
+ *    offers is page-wide, and this reply's own end event is exactly the one that
+ *    is missing.
+ * 5. A reply that is released while still queued behind other speech, before its
+ *    own `onstart`, is never cancelled, so its utterance can play late.
  *
  * Before speaking, `onDuration` receives an inactivity ceiling in seconds:
  * `min(PLAYBACK_CEILING_MAX_MS, max(PLAYBACK_CAP_MS, text.length *
