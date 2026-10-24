@@ -177,9 +177,9 @@ function readSpeaking(): boolean | null {
  * 4. An engine that fires `onstart` but never `onend` or `onerror` leaves
  *    `thisSpeaking` true for good. If other speech then keeps the page flag true,
  *    the cap can still cancel that other speech, because the flag cannot say
- *    whose it is. There is no in-page fix for this: the only signal the platform
- *    offers is page-wide, and this reply's own end event is exactly the one that
- *    is missing.
+ *    whose it is. There is no in-page fix for this: the reply's other
+ *    per-utterance events (`boundary`, `mark`, `pause`, `resume`) show activity
+ *    but never report an end, and the flag cannot say whose speech it is.
  * 5. A reply that is released while still queued behind other speech, before its
  *    own `onstart`, is never cancelled, so its utterance can play late.
  *
