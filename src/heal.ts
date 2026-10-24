@@ -76,7 +76,9 @@ const TRAILING_FILLER = /\b(?:u+m+|u+h+|e+r+|erm|hmm+|mm+|uhm)\b\s*$/iu
 
 /** The text without trailing punctuation and filler words, removed until neither is left. */
 function withoutTrailingNoise(text: string): string {
-  let current = text.trim()
+  // Only the end is trimmed: `finalPhraseIndex` returns an index into this string, and the
+  // caller slices the original with it, so a leading space must not shift the offsets.
+  let current = text.trimEnd()
   for (;;) {
     const next = current.replace(TRAILING_PUNCTUATION, '').replace(TRAILING_FILLER, '').trimEnd()
     if (next === current) return current
@@ -124,7 +126,8 @@ const HOST_ANY_PHRASE = /\bthat(?: is |'s |s )my prompt\b[.!?,;:]*/giu
  * error, timeout, non-JSON body, empty content, non-boolean `trigger`, non-string
  * `prompt`), the literal-phrase fallback runs on the raw transcript. The fallback decides
  * only when a literal form ends the transcript, ignoring trailing punctuation and filler words:
- * it returns `trigger: true` with that phrase stripped. Any other transcript makes it throw.
+ * it returns `trigger: true` with every literal form stripped from what precedes it. A
+ * transcript with nothing before the phrase, or with speech after it, makes it throw.
  *
  * When the model call answers `trigger: true`, the host checks the answer against the text
  * (defence in depth; the model still decides every other case):
@@ -188,7 +191,10 @@ function stripPhrases(prompt: string): string {
 function promptBeforeFinalPhrase(rawTranscript: string): string | null {
   const index = finalPhraseIndex(rawTranscript, FALLBACK_FINAL_PHRASE)
   if (index === null) return null
-  return rawTranscript.slice(0, index).replace(/\s+/gu, ' ').trim()
+  // A phrase the speaker also said earlier is still the phrase: it must not reach the prompt.
+  const prompt = stripPhrases(rawTranscript.slice(0, index))
+  // Nothing before the phrase means there is nothing to send, so this is a miss, not an empty send.
+  return prompt === '' ? null : prompt
 }
 
 /** One POST to the model endpoint. Throws `HealFailure` on any failure; never retries. */
