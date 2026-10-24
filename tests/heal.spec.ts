@@ -123,6 +123,13 @@ describe('contract constants', () => {
     // Breaks if: someone lowers the timeout below the one measured idle-gap call.
     expect(HEAL_TIMEOUT_MS).toBeGreaterThan(8_580)
   })
+
+  it('carries the filler rule and ends with the never-change clause', () => {
+    // Breaks if: the filler sentence is dropped from the constant, or the clause that
+    // limits the model to those edits is reworded or removed.
+    expect(HEAL_SYSTEM_PROMPT).toContain('Remove filler words such as "um", "uh" and "er"')
+    expect(HEAL_SYSTEM_PROMPT.endsWith('Never change any other wording.')).toBe(true)
+  })
 })
 
 describe('model path: one call returns trigger and prompt from one response', () => {
@@ -243,8 +250,14 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
   it.each([
     ['apostrophe form', "read the config that's my prompt", 'read the config'],
     ['capitalised, with a sentence mark', 'Read the config. That is my prompt.', 'Read the config.'],
-  ])('the literal form (%s) is stripped and what is left is sent', async (_label, raw, prompt) => {
-    // Breaks if: the case-insensitive match or the sentence-mark removal is lost.
+    ['one trailing period', 'read the config that is my prompt.', 'read the config'],
+    ['trailing exclamation and spaces', 'read the config that is my prompt!   ', 'read the config'],
+    ['upper case', 'READ THE CONFIG THAT IS MY PROMPT', 'READ THE CONFIG'],
+    ['final occurrence only', 'that is my prompt and that is my prompt', 'that is my prompt and'],
+    ['phrase only, so the prompt is empty (caller must not send it)', 'that is my prompt', ''],
+  ])('the final literal form (%s) is stripped and what is left is sent', async (_label, raw, prompt) => {
+    // Breaks if: the case-insensitive match, the sentence-mark removal, the trailing-whitespace
+    // allowance, or the final-occurrence rule is lost.
     const result = await heal(raw, await closedEndpoint())
     expect(result).toEqual({ trigger: true, prompt, source: 'fallback' })
   })
@@ -256,19 +269,20 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
     ['no apostrophe (not one of the two literal forms)', 'read the config thats my prompt'],
     ['prompted (word boundary)', 'read the config that is my prompted'],
     ['no phrase at all', 'read the config'],
+    ['two trailing marks after the phrase', 'read the config that is my prompt..'],
   ])('a fallback miss (%s) keeps the capture open by throwing HealFailure', async (_label, raw) => {
-    // Breaks if: the fallback matches a substring such as "prompt" or "promt", or a miss
-    // returns a prompt instead of throwing.
+    // Breaks if: the fallback matches a substring such as "prompt" or "promt", accepts a second
+    // trailing mark, or a miss returns a prompt instead of throwing.
     await expect(heal(raw, await closedEndpoint())).rejects.toBeInstanceOf(HealFailure)
   })
 
-  it('KNOWN CONFLICT, pinned: the fallback fires when the phrase is followed by more speech', async () => {
-    // SPEC.md says the fallback is a plain substring check. The model path refuses a phrase
-    // followed by speech. This test pins the current fallback behaviour so the conflict is
-    // visible; it is an overseer decision, not a settled rule.
-    // Breaks if: the fallback is changed to end-anchoring without a decision on this conflict.
-    const result = await heal('that is my prompt now explain the vad', await closedEndpoint())
-    expect(result).toEqual({ trigger: true, prompt: 'now explain the vad', source: 'fallback' })
+  it('a phrase that does not end the transcript makes the fallback throw, not fire', async () => {
+    // SPEC rule 4: a phrase followed by more speech is not a trigger. During an outage the
+    // fallback refuses such a transcript by throwing. It never returns trigger false for it,
+    // because a silent false would look the same as a working model that heard no phrase.
+    // Breaks if: the fallback fires on a non-final phrase and sends "now explain the vad",
+    // or it resolves with trigger false.
+    await expect(heal('that is my prompt now explain the vad', await closedEndpoint())).rejects.toBeInstanceOf(HealFailure)
   })
 })
 

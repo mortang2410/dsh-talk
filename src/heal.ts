@@ -1,7 +1,7 @@
 /**
  * One local model call that heals a raw speech transcript and decides whether the
- * speaker ended it with the trigger phrase. When that call fails, a literal-phrase
- * check on the raw transcript decides instead.
+ * speaker ended it with the trigger phrase. When that call fails, a literal check decides
+ * instead: the phrase must end the raw transcript, or the call throws.
  *
  * `HEAL_SYSTEM_PROMPT` is copied byte-for-byte from the fenced block under
  * "## System prompt, verbatim" in the project's `HEAL-PROMPT.md`. The byte-identity
@@ -25,10 +25,11 @@ export const HEAL_MODEL = 'bonsai2-27b'
  * that outlier with about 1.7x headroom. A value under 8.58 s would abort a call the
  * model was still answering, and the fallback would then miss any non-literal form.
  */
+// TODO(k6fr): promote HEAL_TIMEOUT_MS to a Config field when the capture loop is wired.
 export const HEAL_TIMEOUT_MS = 15_000
 
 /** The system prompt, verbatim from `HEAL-PROMPT.md`. Edit that file, not this constant. */
-export const HEAL_SYSTEM_PROMPT = `You turn a raw speech transcript into a clean prompt. Reply with JSON only: {"trigger": true|false, "prompt": "<cleaned text without the trigger phrase>"}. The trigger phrase is "that is my prompt" or "that's my prompt". It ends the utterance. Fire on close variants of the word "prompt" caused by recognition error, such as "promt", "promp", "prompted". Do NOT fire when the recogniser returned a different word with a different meaning, such as "problem", "pocket" or "profit", even if it sounds similar: those are content, not the phrase. Set trigger true only when the phrase ends the transcript. If the phrase appears earlier and speech continues, trigger is false and the prompt keeps those words.`
+export const HEAL_SYSTEM_PROMPT = `You turn a raw speech transcript into a clean prompt. Reply with JSON only: {"trigger": true|false, "prompt": "<cleaned text without the trigger phrase>"}. The trigger phrase is "that is my prompt" or "that's my prompt". It ends the utterance. Fire on close variants of the word "prompt" caused by recognition error, such as "promt", "promp", "prompted". Do NOT fire when the recogniser returned a different word with a different meaning, such as "problem", "pocket" or "profit", even if it sounds similar: those are content, not the phrase. Set trigger true only when the phrase ends the transcript. If the phrase appears earlier and speech continues, trigger is false and the prompt keeps those words. Remove filler words such as "um", "uh" and "er", and false starts, and collapse a word repeated immediately such as "the the" to one. Drop a leading discourse marker such as "so", "okay" or "well" when it opens the transcript. Never change any other wording.`
 
 /** What a caller receives: the trigger decision and the cleaned prompt. */
 export interface HealDecision {
@@ -50,7 +51,7 @@ export interface HealOptions {
   logRawTranscript?: (rawTranscript: string) => void
 }
 
-/** Thrown when the model call failed and the literal-phrase fallback did not match. */
+/** Thrown when the model call failed and the fallback did not find a phrase that ends the transcript. */
 export class HealFailure extends Error {
   constructor(message: string) {
     super(message)
@@ -59,26 +60,28 @@ export class HealFailure extends Error {
 }
 
 /**
- * The two literal trigger forms the fallback recognises, ignoring case. `\b` at the end
- * keeps "that is my prompted" from matching; the optional `[.!?]` removes the sentence
- * mark that recognisers attach to the phrase.
+ * The two literal trigger forms, ignoring case, only when they end the transcript. `\b`
+ * keeps "that is my prompted" from matching. After the phrase, at most one `[.!?]` and
+ * trailing whitespace may follow; a second mark or any other word means no match.
  */
-const LITERAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?/giu
+const FINAL_LITERAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
 
 /**
  * Heal a raw transcript with exactly one model call and report the trigger decision.
  *
- * The raw transcript is logged before the request is sent. The model call carries
- * `reasoning_effort: "none"`: with reasoning on, the same call spent its budget on
- * reasoning tokens and returned empty content. If the call fails for any reason (HTTP
+ * The raw transcript is logged before the request is sent. It is user speech, and it is
+ * written to the host's own console (journal) on this machine by design. The model call
+ * carries `reasoning_effort: "none"`: with reasoning on, the same call spent its budget
+ * on reasoning tokens and returned empty content. If the call fails for any reason (HTTP
  * error, timeout, non-JSON body, empty content, non-boolean `trigger`, non-string
- * `prompt`), the literal-phrase fallback runs on the raw transcript. A fallback hit
- * returns `trigger: true` with the phrase stripped. A fallback miss throws.
+ * `prompt`), the literal-phrase fallback runs on the raw transcript. The fallback decides
+ * only when a literal form ends the transcript: it returns `trigger: true` with that
+ * phrase stripped. Any other transcript makes it throw.
  *
  * @param rawTranscript - the accumulated raw transcript for the current capture.
  * @param options - optional endpoint, timeout and logger overrides.
  * @returns the decision, with `source` naming which path decided.
- * @throws {HealFailure} when the model call failed and the fallback found no literal phrase.
+ * @throws {HealFailure} when the model call failed and the transcript does not end with a literal phrase.
  */
 export async function healTranscript(rawTranscript: string, options: HealOptions = {}): Promise<HealDecision> {
   const logRaw = options.logRawTranscript ?? logToConsole
@@ -88,16 +91,20 @@ export async function healTranscript(rawTranscript: string, options: HealOptions
     return { trigger, prompt, source: 'model' }
   } catch (error) {
     const reason = sanitizeText(error, 300)
-    const stripped = stripLiteralPhrase(rawTranscript)
-    if (stripped === null) throw new HealFailure(`heal call failed (${reason}) and the transcript has no literal trigger phrase`)
-    return { trigger: true, prompt: stripped, source: 'fallback' }
+    const prompt = promptBeforeFinalPhrase(rawTranscript)
+    if (prompt === null) throw new HealFailure(`heal call failed (${reason}) and the transcript does not end with the trigger phrase`)
+    return { trigger: true, prompt, source: 'fallback' }
   }
 }
 
-/** Remove the literal trigger forms and return what is left, or `null` when neither appears. */
-function stripLiteralPhrase(rawTranscript: string): string | null {
-  if (rawTranscript.search(LITERAL_PHRASE) === -1) return null
-  return rawTranscript.replace(LITERAL_PHRASE, ' ').replace(/\s+/gu, ' ').trim()
+/**
+ * The fallback's only decision. When a literal form ends the transcript, return the text
+ * before it, whitespace collapsed. Otherwise return `null`, and the caller throws.
+ */
+function promptBeforeFinalPhrase(rawTranscript: string): string | null {
+  const match = FINAL_LITERAL_PHRASE.exec(rawTranscript)
+  if (match === null) return null
+  return rawTranscript.slice(0, match.index).replace(/\s+/gu, ' ').trim()
 }
 
 /** One POST to the model endpoint. Throws `HealFailure` on any failure; never retries. */
