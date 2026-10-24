@@ -33,7 +33,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     /** Stop in-flight host synthesis (the user started talking). */
     interrupt: () => Promise<RemoteResult<TalkInterruptResult>>
     /** The newest utterance of ONE session (null when it never spoke); session-keyed, so multi-session surfaces never read another session's utterance. */
-    latest: (sessionId: string) => Promise<RemoteResult<TalkLatest | null>>
+    latest: (sessionId: string, signal?: AbortSignal) => Promise<RemoteResult<TalkLatest | null>>
   }
   interface TypertRemoteMap {
     'talk/status': () => Promise<RemoteResult<TalkStatus>>
@@ -41,7 +41,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'talk/transcribe': (audioData: string) => Promise<RemoteResult<TalkTranscript>>
     'talk/applySettings': (settings: TalkSettingsInput) => Promise<RemoteResult<TalkSettingsResult>>
     'talk/interrupt': () => Promise<RemoteResult<TalkInterruptResult>>
-    'talk/latest': (sessionId: string) => Promise<RemoteResult<TalkLatest | null>>
+    'talk/latest': (sessionId: string, signal?: AbortSignal) => Promise<RemoteResult<TalkLatest | null>>
   }
   interface TypertRemoteNamespaceMap {
     talk: TypertRemoteNamespace$talk

@@ -374,6 +374,8 @@ export const TALK_LATEST_DESCRIPTOR = Object.freeze({
     source: 'json',
     codec: strictWire('dsh-talk/types#TalkLatestSessionId', z.string()),
   } satisfies InvocationDescriptor['parameters'][number])]),
+  /** The caller's abort signal cancels the request; it is never a wire field. */
+  cancellation: Object.freeze({ parameter: 'signal' }),
   result: strictWire('dsh-talk/types#TalkLatest', z.union([TALK_LATEST_SCHEMA, z.null()])),
   sourceLocation: SOURCE,
 } as const) satisfies InvocationDescriptor

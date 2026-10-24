@@ -101,8 +101,9 @@ export async function apply(ctx: Context): Promise<void> {
       unwrap<TalkTranscript>(await talk.transcribe(audioData), 'transcribe')
     const audio: TalkMicInjected['audio'] = async (utteranceId) =>
       unwrap<TalkAudio | null>(await talk.audio(utteranceId), 'audio')
-    const latest: TalkMicInjected['latest'] = async (sessionId) =>
-      unwrap<TalkLatest | null>(await talk.latest(sessionId), 'latest')
+    // The poll's signal reaches the RPC request, so a timed-out read is cancelled.
+    const latest: TalkMicInjected['latest'] = async (sessionId, signal?: AbortSignal) =>
+      unwrap<TalkLatest | null>(await talk.latest(sessionId, signal), 'latest')
     const conversation = scope.get('conversation') as IConversation | undefined
     // Master's sanctioned id → session-scope-ctx exchange (same pattern
     // ui-commands uses); resolves to undefined when either service is
