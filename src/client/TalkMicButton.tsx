@@ -18,7 +18,13 @@ import type {} from '../projection.ts'
 import { foldMic, initMic, type MicViewModel } from './present.ts'
 import { advanceSilence, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
-import { PLAYBACK_CAP_MS, startSpeechPoll } from './speechPoll.ts'
+import {
+  CEILING_MS_PER_CHAR,
+  PLAYBACK_CAP_MS,
+  PLAYBACK_CEILING_MAX_MS,
+  SPEAKING_POLL_MS,
+  startSpeechPoll,
+} from './speechPoll.ts'
 import { recordingToWav16kMono } from './wav.ts'
 import type { TalkAudio, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript } from '../wire.ts'
 
@@ -116,14 +122,19 @@ function supportedMime(): string | undefined {
  * snapshot (`tts.browser`): `talk/latest` carries no per-call voice, rate or
  * pitch, so a speak-tool `voice` override is not applied on this path.
  *
- * The expected length is reported through `onDuration` before speaking. It
- * assumes 100 ms per character at rate 1 and is never below the playback cap,
- * so an engine that never fires `end` holds the chain for at most that
- * estimate plus the margin.
+ * The reply ends on the first of three signals: the utterance's `end` or
+ * `error`, or `speechSynthesis.speaking` going false after it was seen true
+ * (polled every SPEAKING_POLL_MS). The poll's "seen true first" guard keeps an
+ * engine whose `speaking` never turns true from cutting the reply off at once.
+ *
+ * Before speaking, `onDuration` receives an upper bound in seconds: the
+ * ceiling `min(PLAYBACK_CEILING_MAX_MS, max(PLAYBACK_CAP_MS, text.length *
+ * CEILING_MS_PER_CHAR / rate))`. The bound only matters when no signal above
+ * arrives, so it is sized to hold a slow voice and to clamp a wedged engine.
  *
  * @param text - the sanitized utterance text from `talk/latest`.
  * @param delivery - the browser delivery settings, when the snapshot has loaded.
- * @param onDuration - receives the estimated length in seconds before speaking.
+ * @param onDuration - receives the upper bound in seconds before speaking.
  * @returns a promise that resolves when the speech ends or fails, so the poller
  *   can keep it in order with the audio replies.
  */
@@ -145,10 +156,39 @@ function speakWithBrowserVoice(
       utterance.pitch = delivery.pitch
     }
     const rate = Math.max(0.1, delivery?.rate ?? 1)
-    onDuration(Math.max(PLAYBACK_CAP_MS / 1000, (text.length * 100) / 1000 / rate))
-    utterance.onend = () => resolve()
-    utterance.onerror = () => resolve()
+    const ceilingMs = Math.min(
+      PLAYBACK_CEILING_MAX_MS,
+      Math.max(PLAYBACK_CAP_MS, (text.length * CEILING_MS_PER_CHAR) / rate),
+    )
+    onDuration(ceilingMs / 1000)
+    let finished = false
+    let timer: ReturnType<typeof setInterval> | undefined
+    const finish = (): void => {
+      if (finished) return
+      finished = true
+      if (timer !== undefined) clearInterval(timer)
+      resolve()
+    }
+    utterance.onend = finish
+    utterance.onerror = finish
     speechSynthesis.speak(utterance)
+    // The utterance may have ended synchronously; never start a poll after that.
+    if (finished) return
+    let seenSpeaking = false
+    timer = setInterval(() => {
+      let speaking: boolean
+      try {
+        speaking = speechSynthesis.speaking === true
+      } catch {
+        // An unreadable flag is not a finished reply: wait for the next read or the ceiling.
+        return
+      }
+      if (speaking) {
+        seenSpeaking = true
+        return
+      }
+      if (seenSpeaking) finish()
+    }, SPEAKING_POLL_MS)
   })
 }
 

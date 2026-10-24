@@ -141,10 +141,68 @@ function setHidden(value: boolean): void {
   })
 }
 
+/** Fake milliseconds since the test's mount; advance keeps it current. */
+let clock = 0
+
 async function advance(ms: number): Promise<void> {
+  clock += ms
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms)
   })
+}
+
+/** Advance until the fake clock reads `ms`. */
+async function advanceTo(ms: number): Promise<void> {
+  await advance(ms - clock)
+}
+
+/** The utterance object the button passes to the stubbed `speechSynthesis.speak`. */
+class FakeUtterance {
+  text: string
+  rate = 1
+  pitch = 1
+  voice: unknown = undefined
+  onend: (() => void) | null = null
+  onerror: (() => void) | null = null
+  constructor(text: string) {
+    this.text = text
+  }
+}
+
+/**
+ * The stubbed browser speech engine. `speaking` is what `speechSynthesis.speaking`
+ * reads. When `speaksOnSpeak` is true, speak() sets `speaking` true, as a real
+ * engine does; a test then sets it false itself, or leaves it true to show that
+ * only the utterance's own end can release the chain.
+ */
+interface FakeSpeech {
+  speaking: boolean
+  speaksOnSpeak: boolean
+  spoken: FakeUtterance[]
+  /** How many times the button read `speechSynthesis.speaking`. */
+  reads: number
+}
+let speech: FakeSpeech = { speaking: false, speaksOnSpeak: false, spoken: [], reads: 0 }
+
+function stubSpeech(speaksOnSpeak: boolean): void {
+  speech = { speaking: false, speaksOnSpeak, spoken: [], reads: 0 }
+  vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
+  vi.stubGlobal('speechSynthesis', {
+    getVoices: () => [],
+    speak: (utterance: FakeUtterance) => {
+      speech.spoken.push(utterance)
+      if (speech.speaksOnSpeak) speech.speaking = true
+    },
+    get speaking(): boolean {
+      speech.reads += 1
+      return speech.speaking
+    },
+  })
+}
+
+/** A browser-engine reply of `characters` characters, as talk/latest reports it. */
+function browserReply(utteranceId: string, characters: number): TalkLatest {
+  return { ...utterance(utteranceId), engine: 'browser', text: 'a'.repeat(characters) }
 }
 
 describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
@@ -157,6 +215,8 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     Object.assign(URL, { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} })
     constructedAudio.length = 0
     playerScripts.length = 0
+    clock = 0
+    stubSpeech(false)
     remote = { latestValue: null, latestCalls: [], audioCalls: [] }
     container = document.createElement('div')
     document.body.append(container)
@@ -297,44 +357,120 @@ describe('TalkMicButton playback wiring (stubbed talk remote)', () => {
     expect(constructedAudio).toHaveLength(2)
   })
 
-  it('a browser reply longer than the cap is held for its estimate plus the margin, so the next reply does not speak over it', async () => {
-    class FakeUtterance {
-      text: string
-      rate = 1
-      pitch = 1
-      voice: unknown = undefined
-      onend: (() => void) | null = null
-      onerror: (() => void) | null = null
-      constructor(text: string) {
-        this.text = text
-      }
-    }
-    const spoken: FakeUtterance[] = []
-    vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
-    vi.stubGlobal('speechSynthesis', {
-      getVoices: () => [],
-      speak: (utterance: FakeUtterance) => {
-        spoken.push(utterance)
-      },
-    })
+  it('a browser reply with no end signal is held for its ceiling plus the margin, so the next reply does not speak over it', async () => {
+    // 1500 characters at rate 1: ceiling 450 s, bound 455 s. Neither end nor
+    // error fires, and speaking never turns true, so only the ceiling releases.
+    stubSpeech(false)
     remote.latestValue = null
     mount()
-    await advance(0)
-    // 1500 characters at rate 1 are estimated at 150 s. The browser end never fires.
-    remote.latestValue = { ...utterance('b1'), engine: 'browser', text: 'a'.repeat(1500) }
-    await advance(SPEECH_POLL_MS)
-    expect(spoken).toHaveLength(1)
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 1500)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
     remote.latestValue = utterance('n1')
-    await advance(SPEECH_POLL_MS)
+    await advanceTo(SPEECH_POLL_MS * 2)
     expect(remote.audioCalls).toEqual(['n1'])
     expect(constructedAudio).toHaveLength(0)
     // Past the 120 s cap the browser reply still holds the next reply.
-    await advance(PLAYBACK_CAP_MS)
+    await advanceTo(PLAYBACK_CAP_MS)
     expect(constructedAudio).toHaveLength(0)
-    await advance(30_000)
+    // Released at 0.7 s + 455 s = 455.7 s.
+    await advanceTo(455_000)
     expect(constructedAudio).toHaveLength(0)
-    // Released at the estimate plus the 5 s margin: 0.7 s + 155 s = 155.7 s.
-    await advance(5_000)
+    await advanceTo(456_000)
+    expect(constructedAudio).toHaveLength(1)
+  })
+
+  it('end releases the chain: the next reply plays about 3 s in, not at the ceiling', async () => {
+    // speaking stays true, so only the utterance's own end can release the chain.
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(2_999)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(3_000)
+    speech.spoken[0]?.onend?.()
+    await advanceTo(3_500)
+    expect(constructedAudio).toHaveLength(1)
+    expect(remote.audioCalls).toEqual(['n1'])
+    // The speaking poll stops with the reply: no further reads after the end.
+    const readsAtEnd = speech.reads
+    await advanceTo(5_000)
+    expect(speech.reads).toBe(readsAtEnd)
+  })
+
+  it('slow speech does not overlap: 1500 characters with end at 300 s hold the next reply until 300 s', async () => {
+    // Reviewer probe P-F1a. 1500 characters at 5 per second take 300 s; the
+    // previous estimate (155 s bound) released the next reply at about 155.7 s.
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 1500)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(299_900)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(300_000)
+    speech.speaking = false
+    speech.spoken[0]?.onend?.()
+    await advanceTo(301_000)
+    expect(constructedAudio).toHaveLength(1)
+  })
+
+  it('speaking going false releases the chain when end never fires: the next reply plays by 3.5 s', async () => {
+    // Pins the speaking poll on its own: onend is never fired.
+    stubSpeech(true)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(2_999)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(3_000)
+    speech.speaking = false
+    await advanceTo(3_500)
+    expect(constructedAudio).toHaveLength(1)
+  })
+
+  it('a wedged engine is released at the 125 s floor: 200 characters, no end, no error, speaking never true', async () => {
+    // ceiling max(120 s, 200 * 300 ms) = 120 s, bound 125 s, started at 0.7 s: released at 125.7 s.
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 200)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(125_000)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(125_800)
+    expect(constructedAudio).toHaveLength(1)
+  })
+
+  it('a wedged engine is clamped at 605 s: 20000 characters, no end, no error, speaking never true', async () => {
+    // ceiling min(600 s, 20000 * 300 ms) = 600 s, bound 605 s, started at 0.7 s: released at 605.7 s.
+    stubSpeech(false)
+    remote.latestValue = null
+    mount()
+    await advanceTo(0)
+    remote.latestValue = browserReply('b1', 20_000)
+    await advanceTo(SPEECH_POLL_MS)
+    expect(speech.spoken).toHaveLength(1)
+    remote.latestValue = utterance('n1')
+    await advanceTo(605_000)
+    expect(constructedAudio).toHaveLength(0)
+    await advanceTo(605_800)
     expect(constructedAudio).toHaveLength(1)
   })
 })

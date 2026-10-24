@@ -37,6 +37,24 @@ export const PLAYBACK_CAP_MS = 120_000
 /** Slack added to a known audio duration before the playback wait is released. */
 export const PLAYBACK_MARGIN_MS = 5_000
 
+/**
+ * Browser-voice ceiling per character, in milliseconds, at rate 1. Deliberately
+ * slower than real speech (about 4 to 5 characters per second for Chinese, so
+ * about 200 to 250 ms per character): the ceiling only fires for an engine that
+ * never ends its speech, and the speaking poll ends a normal reply.
+ */
+export const CEILING_MS_PER_CHAR = 300
+
+/** Longest browser-voice ceiling, in milliseconds: the hard clamp on a wedged engine's hold. */
+export const PLAYBACK_CEILING_MAX_MS = 600_000
+
+/**
+ * Milliseconds between reads of `speechSynthesis.speaking` while a browser
+ * reply is spoken. The reply ends on the first read that is false after a read
+ * that was true.
+ */
+export const SPEAKING_POLL_MS = 250
+
 /** How many utterance ids are remembered for the play-once rule (oldest dropped first). */
 const SEEN_CAP = 64
 
@@ -52,8 +70,9 @@ export interface SpeechPollDeps {
   audio(utteranceId: string): Promise<TalkAudio | null>
   /**
    * Speak text with the browser voice; resolves when the speech ends or fails.
-   * Calls onDuration with the expected length in seconds before speaking, so
-   * the chain is bounded even when the engine never reports the end.
+   * Calls onDuration with an upper bound in seconds before speaking, so the
+   * chain is bounded even when the engine never reports the end. The bound is
+   * not the expected length: the speech itself normally ends the wait first.
    */
   speakText(text: string, onDuration: (seconds: number) => void): Promise<void>
   /**
@@ -69,7 +88,12 @@ export interface SpeechPollDeps {
 
 /** What the chain hands a playback task. */
 interface PlaybackContext {
-  /** Reports the duration in seconds; the bound becomes that duration plus {@link PLAYBACK_MARGIN_MS}. */
+  /**
+   * Reports an upper bound in seconds; the chain's bound becomes that value plus
+   * {@link PLAYBACK_MARGIN_MS}. The bound releases the chain only when the task
+   * has not settled first, so a reported value that is too large costs time on a
+   * stalled engine, and one that is too small lets speech overlap the next reply.
+   */
   onDuration(seconds: number): void
   /** True once the chain has released this task, because its bound elapsed or it finished. */
   released(): boolean
