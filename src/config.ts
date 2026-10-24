@@ -78,9 +78,9 @@ export interface RecordConfig {
   maxSeconds?: number
   /**
    * Hard ceiling in seconds for one segmented capture (default 600). It governs only the
-   * segmented capture (voice-activity detection on). Reaching it ends the capture the way
-   * the 120-second silence trip does: recording stops and the transcript goes to the
-   * composer unsent. It never submits. The legacy single recording ignores it.
+   * segmented capture (voice-activity detection on). Reaching it ends the capture: recording
+   * stops and the words said since the last trigger go to the composer unsent. It never
+   * submits. The legacy single recording ignores it. It is the only automatic end of a capture.
    */
   ceilingSeconds?: number
   /** Submit the transcription as the user message automatically (default false). */

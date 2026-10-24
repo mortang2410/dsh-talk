@@ -76,9 +76,3 @@ export const LISTENER_ONSET_MS = 500
 export function advanceSpeechRun(previousRun: number, speech: boolean): number {
   return speech ? previousRun + 1 : 0
 }
-
-/**
- * Silence, in milliseconds, after which a segmented capture ends without a trigger. It is
- * measured from the last speech frame, only once the capture has at least one segment.
- */
-export const CAPTURE_SILENCE_TIMEOUT_MS = 120_000

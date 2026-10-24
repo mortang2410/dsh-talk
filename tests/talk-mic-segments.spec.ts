@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * The record button in segmented (voice-activity) capture: the microphone stays open
- * until the heal call's trigger, the 120-second silence timeout, or a stop. The browser
+ * until a stop or the hard ceiling. A heal trigger sends its prompt and the mic stays open. The browser
  * recorder, the analyser, the transcriber and the heal endpoint are stubbed, and the
  * clock is virtual (setInterval and Date only), so 120 seconds of silence runs at once.
  *
@@ -359,7 +359,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('sends the accumulated prompt at once on the trigger, without the phrase', async () => {
+  it('sends the accumulated prompt at once on the trigger, without the phrase, and keeps the mic open', async () => {
     transcriptQueue = ['first sentence', 'second sentence', 'third sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
@@ -371,7 +371,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     expect(sent).toEqual(['first sentence second sentence third sentence'])
     expect(sent.join(' ')).not.toMatch(/my prompt/iu)
-    expect(recording()).toBe(false)
+    expect(recording()).toBe(true)
     expect(drafts).toEqual([])
   })
 
@@ -385,7 +385,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(recording()).toBe(true)
   })
 
-  it('stops after 120 seconds of silence and leaves the transcript in the composer unsent', async () => {
+  it('stays open through 120 seconds of silence, with the transcript kept and nothing sent', async () => {
     transcriptQueue = ['first sentence', 'second sentence']
     await mountAndSettle()
     await startCapture()
@@ -393,15 +393,13 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     await speak(1000)
     await advance(1000)
-    await advance(118_000)
+    await advance(130_000)
     expect(recording()).toBe(true)
-    await advance(3000)
-    expect(recording()).toBe(false)
-    expect(drafts).toEqual(['first sentence second sentence'])
+    expect(drafts).toEqual([])
     expect(sent).toEqual([])
   })
 
-  it('keeps the capture open across pauses shorter than 120 seconds, however long the capture runs', async () => {
+  it('keeps the capture open across long pauses, however long the capture runs', async () => {
     transcriptQueue = ['first sentence', 'second sentence', 'third sentence']
     await mountAndSettle()
     await startCapture()
@@ -416,7 +414,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('keeps an unbroken utterance open past 120 seconds, because speech resets the timeout', async () => {
+  it('keeps an unbroken utterance open past 120 seconds', async () => {
     await mountAndSettle()
     await startCapture()
     await speak(130_000)
@@ -424,7 +422,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(transcribed).toEqual([])
   })
 
-  it('does not trip the 120-second timeout while no segment has been captured', async () => {
+  it('keeps the capture open through silence before any segment', async () => {
     await mountAndSettle()
     await startCapture()
     await advance(130_000)
@@ -441,7 +439,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await speak(1000)
     await advance(1000)
     expect(sent).toEqual(['first sentence'])
-    expect(recording()).toBe(false)
+    expect(recording()).toBe(true)
     expectHostOnlyFetches()
   })
 
@@ -474,7 +472,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     ])
   })
 
-  it('a segmented capture outlives record.maxSeconds and still ends on the trigger', async () => {
+  it('a segmented capture outlives record.maxSeconds and keeps running after the trigger', async () => {
     transcriptQueue = ['first sentence', 'second sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
@@ -485,7 +483,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await speak(1000)
     await advance(1000)
     expect(sent).toEqual(['first sentence second sentence'])
-    expect(recording()).toBe(false)
+    expect(recording()).toBe(true)
     expect(drafts).toEqual([])
   })
 
@@ -514,15 +512,28 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(fetched.filter(url => url.includes(':8090'))).toEqual([])
   })
 
-  it('a trigger from the host heal route submits the cleaned prompt and closes the capture', async () => {
+  it('a trigger from the host heal route submits the cleaned prompt and keeps the capture open', async () => {
     transcriptQueue = ['first sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
     await speak(1000)
     await advance(1000)
     expect(sent).toEqual(['first sentence'])
-    expect(recording()).toBe(false)
+    expect(recording()).toBe(true)
     expect(healCalls).toEqual(['first sentence that is my prompt'])
+  })
+
+  it('after a trigger the next prompt starts from empty, because the capture stays open', async () => {
+    transcriptQueue = ['first sentence that is my prompt', 'second sentence that is my prompt']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['first sentence', 'second sentence'])
+    expect(recording()).toBe(true)
+    expect(drafts).toEqual([])
   })
 
   it('a HealFailure from the host heal route shows its error and keeps the capture open', async () => {
@@ -565,15 +576,15 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('a trigger answered after the 120-second trip is dropped, and the transcript stays in the composer unsent', async () => {
-    // Blocker 2 (P-F2): the answer lands after the trip; it must not submit.
+  it('a trigger answered after the ceiling is dropped, and the transcript stays in the composer unsent', async () => {
+    // Blocker 2 (P-F2): the answer lands after the ceiling ends the capture; it must not submit.
     transcriptQueue = ['hello that is my prompt']
     holdHeals()
-    await mountAndSettle()
+    await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, ceilingSeconds: 30 } })
     await startCapture()
     await speak(1000)
     await advance(1000)
-    await advance(121_000)
+    await advance(31_000)
     expect(recording()).toBe(false)
     expect(drafts).toEqual([])
     openHealGate()

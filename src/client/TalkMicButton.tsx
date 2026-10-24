@@ -19,7 +19,6 @@ import { foldMic, initMic, planBargeIn, planStopPress, stopControlVisible, type 
 import {
   advanceSilence,
   advanceSpeechRun,
-  CAPTURE_SILENCE_TIMEOUT_MS,
   isSpeechFrame,
   LISTENER_CONSECUTIVE_FRAMES,
   LISTENER_ONSET_MS,
@@ -171,30 +170,24 @@ interface SegmentedCapture {
   mime: string
   /** The recorder of the segment being captured, or null between segments. */
   recorder: MediaRecorder | null
-  /** Segments started so far; the 120-second timeout runs only once this is above zero. */
-  segments: number
   /** When the capture started (Date.now), for the hard ceiling and the elapsed display. */
   startedAt: number
   /** The raw transcripts of every segment so far, joined with single spaces. */
   accumulated: string
   /** Silence, in milliseconds, inside the current segment (ends it at vad.silenceMs). */
   pauseMs: number
-  /** Silence, in milliseconds, since the last speech frame (the 120-second timeout). */
-  idleMs: number
   /**
    * Segments whose `onstop` has not fired yet. It rises once when a segment starts and falls
    * once, in that segment's own `onstop`, so it cannot go negative. A browser-ended segment
    * (the recorder stopped by itself) falls the same way as one this code stopped.
    */
   segmentsOpen: number
-  /** Set once the capture is ending (trigger, timeout, stop or ceiling). Nothing new is detected or asked of heal. */
+  /** Set once the capture is ending (stop or ceiling). Nothing new is detected or asked of heal. */
   closing: boolean
   /** Set on unmount. Nothing from this capture is transcribed into the draft or submitted after it. */
   abandoned: boolean
   /** Set once the final step has been queued, so it runs once. */
   finalized: boolean
-  /** Set when the heal call decided the trigger and the prompt was submitted. */
-  done: boolean
   /** Serial chain: every segment and the final step run here, one after another. */
   queue: Promise<void>
   timer: ReturnType<typeof setInterval> | null
@@ -674,13 +667,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     capture.queue = capture.queue.then(job).catch(() => {})
   }
 
-  // The final step: release the microphone and, unless the trigger already sent the
-  // prompt, put the accumulated transcript in the composer unsent.
+  // The final step: release the microphone and put the words said since the last trigger in
+  // the composer unsent. A trigger clears that text, so no sent prompt is put back.
   const finalizeCapture = (capture: SegmentedCapture): void => {
     capture.stream.getTracks().forEach(track => track.stop())
     if (captureRef.current === capture) captureRef.current = null
     syncListening()
-    if (capture.done || capture.abandoned) return
+    if (capture.abandoned) return
     const text = capture.accumulated.trim()
     if (text === '') {
       setMic(foldMic(micRef.current, { kind: 'reset' }))
@@ -703,7 +696,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   // is ending keeps the segment's words in the draft but asks heal nothing and submits nothing.
   // An unmounted capture keeps nothing from its late segments.
   const processSegment = async (capture: SegmentedCapture, blob: Blob): Promise<void> => {
-    if (capture.done || capture.abandoned) return
+    if (capture.abandoned) return
     let wav: Uint8Array
     try {
       wav = await recordingToWav16kMono(await blob.arrayBuffer())
@@ -739,14 +732,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     // unmounted while the call was in flight. Its transcript is already in the draft.
     if (capture.closing || capture.abandoned) return
     if (!decision.trigger) return
-    capture.done = true
-    closeCapture(capture)
+    // The trigger sends what was said so far and starts the next prompt from empty. The
+    // capture stays open: only a stop or the ceiling ends it. The mic phase is not
+    // touched here, because 'transcribed' and 'reset' would show the mic as idle while
+    // the recorder keeps running.
+    capture.accumulated = ''
     const prompt = decision.prompt.trim()
-    if (prompt === '') {
-      setMic(foldMic(micRef.current, { kind: 'reset' }))
-      return
-    }
-    setMic(foldMic(micRef.current, { kind: 'transcribed', text: prompt }))
+    if (prompt === '') return
     // Arm the session before the prompt starts its turn, so the host knows this turn is spoken.
     // The await is required: the arm must reach the host before the prompt does.
     if (voiceTurn !== undefined && typeof sessionIdProp === 'string' && sessionIdProp !== '') {
@@ -796,7 +788,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       return
     }
     capture.recorder = recorder
-    capture.segments += 1
     capture.pauseMs = 0
   }
 
@@ -829,16 +820,15 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     maybeFinalize(capture)
   }
 
-  // One detector tick. Speech opens a segment; a pause of vad.silenceMs ends it. The
-  // 120-second timeout counts silence since the last speech, and only after a segment exists.
-  // A recorder is taking audio only while it is neither inactive nor stopped on this code's request.
+  // One detector tick. Speech opens a segment; a pause of vad.silenceMs ends it. Silence
+  // never closes the capture. A recorder is taking audio only while it is neither inactive nor stopped on this code's request.
   const isRecording = (capture: SegmentedCapture): boolean =>
     capture.recorder !== null && capture.recorder.state !== 'inactive'
 
   const segmentTick = (capture: SegmentedCapture, record: TalkStatus['record']): void => {
     const analyser = analyserRef.current
     if (analyser === null || capture.closing) return
-    // The hard ceiling ends the capture as the silence trip does: the transcript goes to the composer unsent.
+    // The hard ceiling is the only automatic end of a capture: the words since the last trigger go to the composer unsent.
     if (Date.now() - capture.startedAt >= record.ceilingSeconds * 1000) {
       closeCapture(capture)
       return
@@ -846,7 +836,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     const buffer = new Float32Array(analyser.fftSize)
     analyser.getFloatTimeDomainData(buffer)
     const speech = isSpeechFrame(rmsOf(buffer), record.vad.energyThreshold)
-    capture.idleMs = advanceSilence(capture.idleMs, TICK_MS, speech)
     // The capture decides segmentation only. Barge-in comes from the listener alone, so the reply's own echo in the capture stream cannot cancel the turn.
     if (speech) {
       capture.pauseMs = 0
@@ -856,7 +845,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       capture.pauseMs = advanceSilence(capture.pauseMs, TICK_MS, false)
       if (silenceTrips(capture.pauseMs, record.vad.silenceMs)) stopCurrentSegment(capture)
     }
-    if (capture.segments > 0 && silenceTrips(capture.idleMs, CAPTURE_SILENCE_TIMEOUT_MS)) closeCapture(capture)
   }
 
   const startSegmentedCapture = (stream: MediaStream, mime: string, record: TalkStatus['record']): void => {
@@ -864,16 +852,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       stream,
       mime,
       recorder: null,
-      segments: 0,
       startedAt: Date.now(),
       accumulated: '',
       pauseMs: 0,
-      idleMs: 0,
       segmentsOpen: 0,
       closing: false,
       abandoned: false,
       finalized: false,
-      done: false,
       queue: Promise.resolve(),
       timer: null,
     }
