@@ -13,7 +13,9 @@
 
 import { sanitizeText } from './sanitize.ts'
 
-/** Loopback endpoint of the resident `bonsai2-27b` model (`HEAL-PROMPT.md`, Request). */
+/** Loopback endpoint of the resident 27B (`HEAL-PROMPT.md`, Request). The served id is
+ * `bonsai2-27b`, a legacy label; the artifact behind it is the scuba profile, Swift 1.5
+ * Qwen3.8-27B IQ3_XXS with an MTP head. */
 export const HEAL_ENDPOINT = 'http://127.0.0.1:8082/v1/chat/completions'
 
 /** Model name sent in the request body. */
