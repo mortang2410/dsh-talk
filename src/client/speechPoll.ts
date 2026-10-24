@@ -56,9 +56,14 @@ export const PLAYBACK_CEILING_MAX_MS = 600_000
 /**
  * Absolute bound on one browser reply, in milliseconds. It finishes the reply
  * even when the speaking flag stays true forever, so the speaking poll always
- * stops. When the flag still reads true at this bound, the reply is cancelled
- * before the chain moves on, so two replies never speak at once. No code caps
- * the length of a reply, so this value is a wait policy, not a limit on speech.
+ * stops. At this bound, the reply's own speech is cancelled before the chain
+ * moves on, if that speech is known to be audible (see `speakWithBrowserVoice`).
+ *
+ * This value is a limit on spoken duration. Text length is capped upstream: the
+ * speak tool rejects text over `maxSpeakChars` (`tool.ts:96`), and the service
+ * cuts text to it (`service.ts:194`). The default is 20,000 characters and the
+ * maximum is 100,000. Spoken duration is not capped anywhere else, so a reply
+ * that reaches this bound loses its tail silently, with no notice to the listener.
  */
 export const PLAYBACK_ABSOLUTE_MAX_MS = 900_000
 
