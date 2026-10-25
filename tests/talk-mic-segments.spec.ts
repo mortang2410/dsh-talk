@@ -138,8 +138,10 @@ async function fakeFetch(url: string, init?: { body?: string }): Promise<unknown
   const raw = (body.messages[1]?.content ?? '').replace(/^raw transcript: /u, '')
   events.push(`heal:${raw}`)
   if (healMode === 'error') return { ok: false, status: 500, text: async () => '' }
+  // A stand-in for the model's filler removal: "um" is dropped wherever it stands.
+  const cleaned = raw.replace(/\bum\s+/giu, '')
   const trigger = FINAL_PHRASE.test(raw)
-  const prompt = trigger ? raw.replace(FINAL_PHRASE, '').trim() : raw
+  const prompt = trigger ? cleaned.replace(FINAL_PHRASE, '').trim() : cleaned
   const content = JSON.stringify({ trigger, prompt })
   return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) }
 }
@@ -582,8 +584,9 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('a trigger answered after the 120-second trip is dropped, and the transcript stays in the composer unsent', async () => {
-    // Blocker 2 (P-F2): the answer lands after the trip; it must not submit.
+  it('a trigger answered after the 120-second trip is dropped, and the text before the phrase reaches the composer unsent', async () => {
+    // Blocker 2 (P-F2): the answer lands after the trip; it must not submit. The stop heals the text
+    // again, so the composer gets the text before the phrase, and the phrase itself is not written.
     transcriptQueue = ['hello that is my prompt']
     holdHeals()
     await mountAndSettle()
@@ -596,7 +599,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     openHealGate()
     await flush()
     expect(sent).toEqual([])
-    expect(drafts).toEqual(['hello that is my prompt'])
+    expect(drafts).toEqual(['hello'])
   })
 
   it('a trigger whose voice-turn arm answers after unmount submits nothing', async () => {
@@ -761,5 +764,110 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     })
     await flush()
     expect(drafts).toEqual(['second sentence'])
+  })
+
+  it('a stop writes the cleaned text, not the raw transcript, when the last heal call did not fire', async () => {
+    // B4: the heal answer for the segment is kept, and the stop writes its cleaned prompt to the composer.
+    transcriptQueue = ['um first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    // The stop reuses the answer; it asks heal no second time.
+    expect(healCalls).toEqual(['um first sentence'])
+    expect(drafts).toEqual(['first sentence'])
+    expect(sent).toEqual([])
+  })
+
+  it('a stop heals the text no heal call judged, and writes its cleaned form', async () => {
+    // B4: the open segment's words arrive after the stop began, so no heal call judged them. The stop asks heal once.
+    transcriptQueue = ['first part', 'um last words']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(healCalls).toEqual(['first part', 'first part um last words'])
+    expect(drafts).toEqual(['first part last words'])
+    expect(sent).toEqual([])
+  })
+
+  it('a stop keeps the raw text when the heal call fails and the text has no trigger phrase', async () => {
+    // B4: the stop-time heal fails too, so the words the speaker said are written as they were transcribed.
+    healMode = 'error'
+    transcriptQueue = ['um first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['um first sentence'])
+    expect(sent).toEqual([])
+  })
+
+  it('a stop heals the text whose heal call failed during the capture', async () => {
+    // B4: the heal call for the segment failed, so no answer covers its words. The stop heals them once the host answers.
+    healMode = 'error'
+    transcriptQueue = ['um first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    healMode = 'model'
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(healCalls).toEqual(['um first sentence', 'um first sentence'])
+    expect(drafts).toEqual(['first sentence'])
+  })
+
+  it('a stop after the trigger phrase writes the text before the phrase to the composer, and sends nothing', async () => {
+    // B4: a trigger heard at the stop is not submitted (the capture is ending), and the phrase is not written.
+    transcriptQueue = ['first sentence', 'second sentence that is my prompt']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(healCalls).toEqual(['first sentence', 'first sentence second sentence that is my prompt'])
+    expect(drafts).toEqual(['first sentence second sentence'])
+    expect(sent).toEqual([])
+  })
+
+  it('a stop submits the words said so far when the autoSubmit setting is on', async () => {
+    // B14: the host path honours record.autoSubmit at the stop, as the Web Speech path does.
+    transcriptQueue = ['first sentence']
+    await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(sent).toEqual(['first sentence'])
+    expect(drafts).toEqual([])
   })
 })

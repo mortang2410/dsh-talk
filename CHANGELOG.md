@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The composer microphone (host-transcription path) captures through an AudioWorklet (`capture-worklet.ts`) instead of MediaRecorder. Every audio block is judged by the pure segmenter (`speech-segmenter.ts`), and each segment is sent as 16 kHz mono 16-bit WAV encoded in the browser.
 - The heal prompt (`HEAL_SYSTEM_PROMPT`) fires on "that is my problem" when the transcript ends with it, because a recogniser often writes "problem" for "prompt". Risk: ordinary speech that ends with "that is my problem" sends a prompt. A phrase followed by more speech still stays prompt content. The prompt also collapses a repeated word or phrase of up to three words ("to go to go"), not only a single word.
+- With the `autoSubmit` setting on, the host-transcription microphone submits the words said so far when it stops. Before, it only wrote them to the composer.
 
 ### Fixed
 
@@ -40,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resampling to 16 kHz low-passes the audio first (windowed sinc, 7.5 kHz cutoff). Before, a 10 kHz tone at 44.1 kHz or 48 kHz folded back into the speech band at 6 kHz.
 - Audio above 16 kHz is resampled to 16 kHz as it arrives, not all at once when a segment closes. Before, closing 120 s of 48 kHz speech took about 0.9 s on the page (measured in Node, not in a browser). Audio at or below 16 kHz is still converted when the segment closes.
 - A trigger whose voice-turn arm answers after the microphone button unmounts no longer submits its prompt.
+- A stop writes the cleaned text, not the raw transcript. The stop reuses the last heal answer when no words came in after it; otherwise it makes one heal call, bounded by `HEAL_TIMEOUT_MS` (15 s). A failed heal writes the raw text, so no word is lost. A trigger phrase heard at the stop is not written: the text before it is.
 
 ## [0.3.18] - 2026-10-05
 

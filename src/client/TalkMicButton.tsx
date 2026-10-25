@@ -202,6 +202,11 @@ interface SegmentedCapture {
   startedAt: number
   /** The raw transcripts of every segment so far, joined with single spaces. */
   accumulated: string
+  /**
+   * The last heal answer that did not fire: the accumulated text it judged (`raw`) and the cleaned text
+   * it gave (`text`). The stop reuses it when no words came in after it. Null after a trigger.
+   */
+  cleaned: { raw: string; text: string } | null
   /** Set once the capture is ending (stop or the 120-second timeout). Nothing new is detected or asked of heal. */
   closing: boolean
   /** Set on unmount. Nothing from this capture is transcribed into the draft or submitted after it. */
@@ -654,20 +659,43 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     capture.queue = capture.queue.then(job).catch(() => {})
   }
 
-  // The final step: release the microphone and put the words said since the last trigger in
-  // the composer unsent. A trigger clears that text, so no sent prompt is put back.
-  const finalizeCapture = (capture: SegmentedCapture): void => {
+  // The cleaned text of the words said since the last trigger, for the stop. The heal answer that judged
+  // the same text is reused. Otherwise the host heals it now, with the same bounded call. A failed call
+  // gives the raw text, so no word is lost. A trigger heard here gives the text before the phrase; the
+  // stop submits it only when autoSubmit is on, and otherwise writes it to the composer.
+  const finalText = async (capture: SegmentedCapture): Promise<string> => {
+    const raw = capture.accumulated.trim()
+    if (raw === '') return ''
+    if (capture.cleaned !== null && capture.cleaned.raw === capture.accumulated) return capture.cleaned.text
+    try {
+      const decision = await heal(capture.accumulated)
+      const text = decision.prompt.trim()
+      return !decision.trigger && text === '' ? raw : text
+    } catch {
+      return raw
+    }
+  }
+
+  // The final step: release the microphone, then put the words said since the last trigger in the composer,
+  // cleaned. With the autoSubmit setting on, they are submitted instead, as the Web Speech path does.
+  // A trigger clears that text, so no sent prompt is put back.
+  const finalizeCapture = async (capture: SegmentedCapture): Promise<void> => {
     capture.stream.getTracks().forEach(track => track.stop())
     if (captureRef.current === capture) captureRef.current = null
     syncListening()
     if (capture.abandoned) return
-    const text = capture.accumulated.trim()
+    const text = await finalText(capture)
+    if (capture.abandoned) return
     if (text === '') {
       setMic(foldMic(micRef.current, { kind: 'reset' }))
       return
     }
-    writeDraft(text)
     setMic(foldMic(micRef.current, { kind: 'transcribed', text }))
+    if (settingsRef.current?.record.autoSubmit === true) {
+      void submitText(text)
+      return
+    }
+    writeDraft(text)
   }
 
   // Queue the final step once. It runs after every segment already queued, so the last words reach the draft first.
@@ -675,13 +703,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     if (capture.finalized) return
     capture.finalized = true
     enqueue(capture, async () => {
-      finalizeCapture(capture)
+      await finalizeCapture(capture)
     })
   }
 
   // One segment: encode, transcribe, log the raw text, then ask the heal call. A capture that
-  // is ending keeps the segment's words in the draft but asks heal nothing and submits nothing.
-  // An unmounted capture keeps nothing from its late segments.
+  // is ending keeps the segment's words for the stop (finalText), asks heal nothing, and so submits
+  // nothing. An unmounted capture keeps nothing from its late segments.
   const processSegment = async (capture: SegmentedCapture, samples: Float32Array): Promise<void> => {
     if (capture.abandoned) return
     const wav = encodeWav16kMono(samples)
@@ -709,15 +737,22 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       setMic(foldMic(micRef.current, { kind: 'failed', message: `heal failed: ${detailOf(error)}` }))
       return
     }
-    // A late answer is dropped, not acted on: the capture ended (120-second timeout or stop) or
-    // unmounted while the call was in flight. Its transcript is already in the draft.
-    if (capture.closing || capture.abandoned) return
-    if (!decision.trigger) return
+    if (capture.abandoned) return
+    if (!decision.trigger) {
+      // The cleaned text of this answer. The stop writes it, unless more words came in first.
+      const prompt = decision.prompt.trim()
+      capture.cleaned = { raw: capture.accumulated, text: prompt === '' ? capture.accumulated.trim() : prompt }
+      return
+    }
+    // A trigger answered after the capture began ending is not acted on: the stop heals the text
+    // again (finalText), so the phrase is handled once, at the stop.
+    if (capture.closing) return
     // The trigger sends what was said so far and starts the next prompt from empty. The
     // capture stays open: only a stop or the 120-second timeout ends it. The mic phase is not
     // touched here, because 'transcribed' and 'reset' would show the mic as idle while
     // the recorder keeps running.
     capture.accumulated = ''
+    capture.cleaned = null
     const prompt = decision.prompt.trim()
     if (prompt === '') return
     // Arm the session before the prompt starts its turn, so the host knows this turn is spoken.
@@ -812,6 +847,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       }),
       startedAt: Date.now(),
       accumulated: '',
+      cleaned: null,
       closing: false,
       abandoned: false,
       finalized: false,
