@@ -29,6 +29,65 @@ function newSegmenter(silenceMs = 1500): ReturnType<typeof createSegmenter> {
   return createSegmenter({ sampleRate: RATE, threshold: 0.01, silenceMs })
 }
 
+/**
+ * The one-shot conversion from before streaming (commit cdffc2a): all the audio at once, with the
+ * same windowed-sinc low-pass. It shares no code with the segmenter, so it independently checks the
+ * streamed output. Input above 16 kHz only.
+ */
+function oneShotToSttRate(samples: Float32Array, fromRate: number): Float32Array {
+  const ratio = fromRate / 16000
+  let count = Math.round((5.5 * fromRate) / 1000)
+  if (count % 2 === 0) count += 1
+  const half = (count - 1) / 2
+  const reach = half + 1
+  const cutoff = 7500 / fromRate
+  const phases = 256
+  const sinc = (x: number): number => (x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x))
+  const taps = new Float64Array(phases * count)
+  for (let phase = 0; phase < phases; phase += 1) {
+    const fraction = phase / phases
+    let sum = 0
+    for (let k = 0; k < count; k += 1) {
+      const distance = fraction + half - k
+      const window = 0.42 + 0.5 * Math.cos((Math.PI * distance) / reach) + 0.08 * Math.cos((2 * Math.PI * distance) / reach)
+      const value = 2 * cutoff * sinc(2 * cutoff * distance) * window
+      taps[phase * count + k] = value
+      sum += value
+    }
+    for (let k = 0; k < count; k += 1) taps[phase * count + k] = taps[phase * count + k]! / sum
+  }
+  const length = Math.floor(samples.length / ratio)
+  const out = new Float32Array(length)
+  for (let index = 0; index < length; index += 1) {
+    const position = index * ratio
+    let base = Math.floor(position)
+    let phase = Math.round((position - base) * phases)
+    if (phase === phases) {
+      base += 1
+      phase = 0
+    }
+    let sum = 0
+    for (let k = 0; k < count; k += 1) {
+      const at = Math.min(Math.max(base - half + k, 0), samples.length - 1)
+      sum += taps[phase * count + k]! * samples[at]!
+    }
+    out[index] = sum
+  }
+  return out
+}
+
+/**
+ * Exact equality. On a mismatch the message names the first differing sample: a plain toEqual on
+ * arrays this long builds a full diff, which takes minutes.
+ */
+function expectSameSamples(actual: Float32Array | null, expected: Float32Array): void {
+  expect(actual).not.toBeNull()
+  expect(actual!.length).toBe(expected.length)
+  let index = 0
+  while (index < expected.length && actual![index] === expected[index]) index += 1
+  expect(index, `first differing sample at ${index}`).toBe(expected.length)
+}
+
 describe('pre-roll', () => {
   it('starts a segment PRE_ROLL_MS before the first speech block, so audio under the energy floor just before the onset is kept', () => {
     expect(PRE_ROLL_MS).toBe(600)
@@ -201,7 +260,7 @@ describe('conversion while a segment is open', () => {
     expect(flushSegment(seg)!.length).toBe(160000)
   })
 
-  it.each([44100, 48000])('gives the same samples as one conversion of all the audio, for any block sizes, at %i Hz', rate => {
+  it.each([44100, 48000, 96000])('gives the same samples as the one-shot conversion of all the audio, for any block sizes, past the first output chunk, at %i Hz', rate => {
     // Deterministic pseudo-random audio and block sizes, so a failure reproduces. The threshold is 0,
     // so every block is speech and the one open segment holds all of the audio.
     let state = 12345
@@ -209,7 +268,8 @@ describe('conversion while a segment is open', () => {
       state = (state * 1103515245 + 12345) >>> 0
       return state / 4294967296
     }
-    const total = rate * 3
+    // 5 s at 16 kHz is 80000 output samples, more than the 65536 of one output chunk.
+    const total = rate * 5
     const audio = Float32Array.from({ length: total }, () => random() * 2 - 1)
     const seg = createSegmenter({ sampleRate: rate, threshold: 0, silenceMs: 1500 })
     let at = 0
@@ -218,6 +278,41 @@ describe('conversion while a segment is open', () => {
       feedBlock(seg, audio.slice(at, at + size))
       at += size
     }
-    expect(flushSegment(seg)).toEqual(toSttRate(audio, rate))
+    expectSameSamples(flushSegment(seg), oneShotToSttRate(audio, rate))
+  })
+
+  it.each([44100, 48000])('a segment that starts with a pre-roll gives the same samples as the one-shot conversion of the pre-roll and the speech, at %i Hz', rate => {
+    // Quiet audio under the energy floor, then speech, in random block sizes. The segment starts with the
+    // newest PRE_ROLL_MS of the quiet audio, so its expected samples are the one-shot conversion of exactly that.
+    let state = 777
+    const random = (): number => {
+      state = (state * 1103515245 + 12345) >>> 0
+      return state / 4294967296
+    }
+    const quiet = Float32Array.from({ length: 960 * 100 }, () => (random() * 2 - 1) * 0.005)
+    const speech = Float32Array.from({ length: rate * 2 }, () => random() * 2 - 1)
+    const seg = createSegmenter({ sampleRate: rate, threshold: 0.01, silenceMs: 1500 })
+    for (let at = 0; at < quiet.length; at += 960) feedBlock(seg, quiet.slice(at, at + 960))
+    let at = 0
+    while (at < speech.length) {
+      const size = Math.min(speech.length - at, 256 + Math.floor(random() * 1792))
+      feedBlock(seg, speech.slice(at, at + size))
+      at += size
+    }
+    const preRoll = quiet.subarray(quiet.length - Math.round((PRE_ROLL_MS / 1000) * rate))
+    const joined = new Float32Array(preRoll.length + speech.length)
+    joined.set(preRoll)
+    joined.set(speech, preRoll.length)
+    expectSameSamples(flushSegment(seg), oneShotToSttRate(joined, rate))
+  })
+
+  it('converts a pre-roll over several feed calls, not all in the onset call', () => {
+    // Review round 3, R3-2. At 96 kHz the pre-roll is 60 blocks of 960 samples. Converting all of it in
+    // the onset call took about 9 ms in Node (about 18 ms with the filter table built in that call).
+    const seg = createSegmenter({ sampleRate: 96000, threshold: 0.01, silenceMs: 1500 })
+    feedAll(seg, [Array.from({ length: 60 }, () => new Float32Array(960))])
+    feedBlock(seg, new Float32Array(960).fill(0.2))
+    // The whole pre-roll is 9600 samples at 16 kHz. The onset call must convert only a small part of it.
+    expect(seg.convertedSamples).toBeLessThan(4800)
   })
 })

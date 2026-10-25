@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A second press while the capture is still opening starts nothing, so one press opens one capture.
 - The pre-roll before a speech onset is the newest non-speech audio, up to 600 ms, which can include the closing silence of the previous segment. A soft word start in that silence now reaches the next segment too.
 - Resampling to 16 kHz low-passes the audio first (windowed sinc, 7.5 kHz cutoff). Before, a 10 kHz tone at 44.1 kHz or 48 kHz folded back into the speech band at 6 kHz.
-- The audio is resampled to 16 kHz as it arrives, not all at once when a segment closes. Before, closing 120 s of 48 kHz speech took about 0.9 s on the page (measured in Node, not in a browser).
+- Audio above 16 kHz is resampled to 16 kHz as it arrives, not all at once when a segment closes. Before, closing 120 s of 48 kHz speech took about 0.9 s on the page (measured in Node, not in a browser). Audio at or below 16 kHz is still converted when the segment closes.
 - A trigger whose voice-turn arm answers after the microphone button unmounts no longer submits its prompt.
 
 ## [0.3.18] - 2026-10-05

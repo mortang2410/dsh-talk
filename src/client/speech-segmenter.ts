@@ -36,7 +36,7 @@ export interface Segmenter {
    */
   history: Float32Array[]
   historySamples: number
-  /** The open segment's audio, converted to the STT rate as its blocks arrive, or null between segments. */
+  /** The open segment's audio, converted to the STT rate as its blocks arrive (above 16 kHz), or null between segments. */
   open: SttStream | null
   /** 16 kHz samples already converted for the open segment (input above 16 kHz). Closing converts only the rest. */
   convertedSamples: number
@@ -55,6 +55,8 @@ export interface Segmenter {
 export type SegmenterEvent = { kind: 'segment'; samples: Float32Array } | { kind: 'timeout' }
 
 export function createSegmenter(options: SegmenterOptions): Segmenter {
+  // Build the filter when the capture starts, not in the first onset callback. Measured in Node: about 2 ms at 48 kHz, about 10 ms at 96 kHz.
+  if (options.sampleRate > STT_SAMPLE_RATE) filterTableFor(options.sampleRate)
   return {
     sampleRate: options.sampleRate,
     threshold: options.threshold,
@@ -118,13 +120,14 @@ export function feedBlock(seg: Segmenter, block: Float32Array): SegmenterEvent[]
   if (speech) {
     let stream: SttStream | null = seg.open
     if (stream === null) {
-      // The onset starts with the history: the newest PRE_ROLL_MS of non-speech audio.
+      // The onset starts with the history: the newest PRE_ROLL_MS of non-speech audio. Its blocks are
+      // queued, and queueStt pushes a few per call, so the onset call does not convert all of them.
       stream = createSttStream(seg.sampleRate)
-      for (const earlier of seg.history) pushSttBlock(stream, earlier)
+      for (const earlier of seg.history) stream.queued.push(earlier)
       seg.open = stream
       seg.segments += 1
     }
-    pushSttBlock(stream, block)
+    queueStt(stream, block)
     seg.convertedSamples = stream.outLength
     seg.history = []
     seg.historySamples = 0
@@ -133,7 +136,7 @@ export function feedBlock(seg: Segmenter, block: Float32Array): SegmenterEvent[]
     pushHistory(seg, block)
     const stream = seg.open
     if (stream !== null) {
-      pushSttBlock(stream, block)
+      queueStt(stream, block)
       seg.convertedSamples = stream.outLength
       seg.pauseMs = advanceSilence(seg.pauseMs, blockMs, false)
       if (silenceTrips(seg.pauseMs, seg.silenceMs)) events.push({ kind: 'segment', samples: closeOpen(seg, stream) })
@@ -203,21 +206,24 @@ function filterTableFor(fromRate: number): FilterTable {
 }
 
 /**
- * The open segment's audio at the input rate, with its 16 kHz output built as the blocks arrive.
+ * The open segment's audio at the input rate, with its 16 kHz output built as the blocks arrive (above 16 kHz;
+ * at or below 16 kHz the whole input is converted at close).
  * `raw` holds the input from absolute index `rawStart` on; input that no later output reads is
- * dropped. `out` holds the 16 kHz samples that are final so far.
+ * dropped. `chunks` hold the 16 kHz samples that are final so far, `outLength` of them. `queued`
+ * holds blocks that are not in `raw` yet (see queueStt).
  */
 interface SttStream {
   readonly fromRate: number
   raw: Float32Array
   rawStart: number
   rawLength: number
-  out: Float32Array
+  chunks: Float32Array[]
   outLength: number
+  queued: Float32Array[]
 }
 
 function createSttStream(fromRate: number): SttStream {
-  return { fromRate, raw: new Float32Array(0), rawStart: 0, rawLength: 0, out: new Float32Array(0), outLength: 0 }
+  return { fromRate, raw: new Float32Array(0), rawStart: 0, rawLength: 0, chunks: [], outLength: 0, queued: [] }
 }
 
 function appendRaw(stream: SttStream, block: Float32Array): void {
@@ -231,14 +237,24 @@ function appendRaw(stream: SttStream, block: Float32Array): void {
   stream.rawLength += block.length
 }
 
+/** 16 kHz samples per output chunk. Output grows a chunk at a time, so no growth step copies the whole segment. */
+const OUT_CHUNK = 65536
+
 function appendOut(stream: SttStream, value: number): void {
-  if (stream.outLength === stream.out.length) {
-    const grown = new Float32Array(Math.max(4096, 2 * stream.out.length))
-    grown.set(stream.out)
-    stream.out = grown
-  }
-  stream.out[stream.outLength] = value
+  const at = stream.outLength % OUT_CHUNK
+  if (at === 0) stream.chunks.push(new Float32Array(OUT_CHUNK))
+  stream.chunks[stream.chunks.length - 1]![at] = value
   stream.outLength += 1
+}
+
+/** The 16 kHz samples so far as one array: each chunk is copied once, in order. */
+function joinOut(stream: SttStream): Float32Array {
+  const out = new Float32Array(stream.outLength)
+  for (let i = 0; i < stream.chunks.length; i += 1) {
+    const start = i * OUT_CHUNK
+    out.set(stream.chunks[i]!.subarray(0, Math.min(OUT_CHUNK, out.length - start)), start)
+  }
+  return out
 }
 
 /**
@@ -285,11 +301,27 @@ function pushSttBlock(stream: SttStream, block: Float32Array): void {
   if (stream.fromRate > STT_SAMPLE_RATE) emitStt(stream, false)
 }
 
+/** Blocks pushed into an open stream per feed call. Above 16 kHz, one block costs about 0.16 ms in Node at 96 kHz, so this keeps each call short. */
+const STT_BLOCKS_PER_FEED = 4
+
+/**
+ * Queue one block of the open segment behind the blocks already waiting, then push up to
+ * STT_BLOCKS_PER_FEED blocks from the front. The stream sees every block in order, so its output is
+ * the same as if each block were pushed when it arrived. Only the timing of the work changes.
+ */
+function queueStt(stream: SttStream, block: Float32Array): void {
+  stream.queued.push(block)
+  for (let pushed = 0; pushed < STT_BLOCKS_PER_FEED && stream.queued.length > 0; pushed += 1) {
+    pushSttBlock(stream, stream.queued.shift()!)
+  }
+}
+
 /** Finish a conversion: the 16 kHz samples for all the input, with the last outputs repeating the final sample. */
 function finishStt(stream: SttStream): Float32Array {
+  while (stream.queued.length > 0) pushSttBlock(stream, stream.queued.shift()!)
   if (stream.fromRate > STT_SAMPLE_RATE) {
     emitStt(stream, true)
-    return stream.out.slice(0, stream.outLength)
+    return joinOut(stream)
   }
   return toSttRate(stream.raw.slice(0, stream.rawLength), stream.fromRate)
 }
