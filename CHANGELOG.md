@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The composer microphone keeps 600 ms of audio before each speech onset (`PRE_ROLL_MS`), so a soft word start below the energy floor reaches the transcript. Before, the first syllables of such a word could be lost.
 - A second press while the capture is still opening starts nothing, so one press opens one capture.
+- The pre-roll before a speech onset is the newest 600 ms of non-speech audio, which can include the closing silence of the previous segment. A soft word start in that silence now reaches the next segment too, and the next segment always starts with the full 600 ms.
+- Resampling to 16 kHz low-passes the audio first (windowed sinc, 7.5 kHz cutoff). Before, a 10 kHz tone at 44.1 kHz or 48 kHz folded back into the speech band at 6 kHz.
+- A trigger whose voice-turn arm answers after the microphone button unmounts no longer submits its prompt.
 
 ## [0.3.18] - 2026-10-05
 

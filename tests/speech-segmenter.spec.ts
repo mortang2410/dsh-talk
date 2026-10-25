@@ -39,9 +39,12 @@ describe('pre-roll', () => {
     const [out] = segmentsOf(events)
     expect(out).toBeDefined()
     // The 600 ms before the speech block: 200 ms of silence, then 400 ms of the soft onset.
+    // The anti-alias filter (toSttRate) smooths each level change over about 44 samples at 16 kHz
+    // (the sample at 3200 reads 0.0013), and it rings about 2 ms ahead of the loud onset (the sample
+    // at 9599 reads -0.0114). So the level checks sit 100 samples inside each run, out of that reach.
     expect(out![0]).toBeCloseTo(0, 6)
-    expect(out![3200]).toBeCloseTo(0.002, 6)
-    expect(out![9599]).toBeCloseTo(0.002, 6)
+    expect(out![3300]).toBeCloseTo(0.002, 6)
+    expect(out![9500]).toBeCloseTo(0.002, 6)
     // The first speech sample sits exactly PRE_ROLL_MS into the 16 kHz segment.
     expect(out!.findIndex(value => value > 0.1)).toBe(9600)
   })
@@ -51,6 +54,43 @@ describe('pre-roll', () => {
     const events = feedAll(seg, [blocks(30000, 0), blocks(200, 0.2), blocks(1600, 0)])
     const [out] = segmentsOf(events)
     expect(out!.findIndex(value => value > 0.1)).toBe(9600)
+  })
+})
+
+describe('pre-roll after a segment closes', () => {
+  it('a soft onset in the silence that closes one segment is in the pre-roll of the next', () => {
+    // Review round 1 F1. 16 kHz, 1600-sample blocks (100 ms each), silenceMs 1000, so no resampling.
+    const seg = createSegmenter({ sampleRate: 16000, threshold: 0.01, silenceMs: 1000 })
+    const block = (level: number): Float32Array => new Float32Array(1600).fill(level)
+    const run = [
+      block(0.2), // speech: opens segment 1
+      ...Array.from({ length: 9 }, () => block(0)), // 900 ms of silence
+      block(0.002), // soft, under the floor: the 1000 ms pause closes segment 1 on this block
+      block(0.002), // soft, after segment 1 closed
+      block(0.002), // soft, after segment 1 closed
+      block(0.2), // speech: opens segment 2
+      ...Array.from({ length: 12 }, () => block(0)), // 1200 ms of silence closes segment 2
+    ]
+    const [, second] = segmentsOf(feedAll(seg, [run]))
+    expect(second).toBeDefined()
+    // 600 ms of pre-roll (9600 samples): blocks 7 to 9 are silence (samples 0 to 4799), blocks 10 to 12 are the soft onset (4800 to 9599).
+    expect(second![0]).toBe(0)
+    expect(second![4799]).toBe(0)
+    expect(second![4800]).toBeCloseTo(0.002, 6)
+    expect(second![9599]).toBeCloseTo(0.002, 6)
+    expect(second!.findIndex(value => value > 0.1)).toBe(9600)
+  })
+
+  it('keeps exactly PRE_ROLL_MS of history when the block size does not divide it', () => {
+    // Review round 1 F2. 1024-sample blocks at 48 kHz do not divide 28800 samples (600 ms), so the
+    // history must be trimmed inside a block, not only between blocks.
+    const seg = createSegmenter({ sampleRate: 48000, threshold: 0.01, silenceMs: 1500 })
+    feedAll(seg, [Array.from({ length: 30 }, () => new Float32Array(1024))])
+    expect(seg.historySamples).toBe(28800)
+    // 28800 pre-roll + 1024 speech + 71 silent blocks (1500 ms) = 102528 samples at 48 kHz, which is 34176 at 16 kHz.
+    const events = feedAll(seg, [[new Float32Array(1024).fill(0.2)], Array.from({ length: 71 }, () => new Float32Array(1024))])
+    const [out] = segmentsOf(events)
+    expect(out!.length).toBe(34176)
   })
 })
 
@@ -124,5 +164,28 @@ describe('toSttRate', () => {
   it('returns 16 kHz input unchanged', () => {
     const samples = new Float32Array([0.1, 0.2, 0.3])
     expect(toSttRate(samples, 16000)).toBe(samples)
+  })
+
+  // Review round 1 F3. Measured on the middle of each output, away from the edges where the filter settles.
+  function toneOf(hz: number, rate: number, seconds: number): Float32Array {
+    return Float32Array.from({ length: Math.round(rate * seconds) }, (_, n) => Math.sin((2 * Math.PI * hz * n) / rate))
+  }
+  function levelOf(samples: Float32Array): number {
+    const middle = samples.subarray(1600, samples.length - 1600)
+    let sum = 0
+    for (const value of middle) sum += value * value
+    return Math.sqrt(sum / middle.length)
+  }
+
+  it.each([44100, 48000])('keeps a 10 kHz tone out of the 16 kHz band at %i Hz, so it does not fold back to 6 kHz', rate => {
+    // 10 kHz is above the 8 kHz limit of 16 kHz audio and must be filtered before the rate drops.
+    expect(levelOf(toSttRate(toneOf(10000, rate, 1), rate))).toBeLessThan(0.01)
+  })
+
+  it.each([44100, 48000])('keeps a 1 kHz tone at its full level at %i Hz', rate => {
+    // A full-scale sine has RMS 0.7071.
+    const level = levelOf(toSttRate(toneOf(1000, rate, 1), rate))
+    expect(level).toBeGreaterThan(0.69)
+    expect(level).toBeLessThan(0.72)
   })
 })

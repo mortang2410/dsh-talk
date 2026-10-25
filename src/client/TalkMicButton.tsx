@@ -718,6 +718,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
         console.warn('[dsh-talk] voice turn arm failed:', error)
       }
     }
+    // The button may have unmounted while the arm was in flight: no prompt is submitted then.
+    if (capture.abandoned) return
     void submitText(prompt)
   }
 

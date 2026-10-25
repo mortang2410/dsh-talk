@@ -14,7 +14,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
 import { healTranscript } from '../src/heal.ts'
-import type { TalkHeal, TalkStatus, TalkTranscript } from '../src/wire.ts'
+import type { TalkHeal, TalkStatus, TalkTranscript, TalkVoiceTurn } from '../src/wire.ts'
 
 const TICK_MS = 500
 /** The capture rate. At 16 kHz a 1000-sample block is 62.5 ms, and no resampling happens. */
@@ -188,7 +188,7 @@ function feed(ms: number, level: number): void {
 let container: HTMLElement
 let root: Root | undefined
 
-function mount(settings: TalkStatus = SETTINGS): void {
+function mount(settings: TalkStatus = SETTINGS, extra: Record<string, unknown> = {}): void {
   const props = {
     status: async () => settings,
     heal: hostHeal,
@@ -209,6 +209,7 @@ function mount(settings: TalkStatus = SETTINGS): void {
     send: async (text: string) => {
       sent.push(text)
     },
+    ...extra,
   }
   root = createRoot(container)
   act(() => {
@@ -581,6 +582,29 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await flush()
     expect(sent).toEqual([])
     expect(drafts).toEqual(['hello that is my prompt'])
+  })
+
+  it('a trigger whose voice-turn arm answers after unmount submits nothing', async () => {
+    // Review round 1 F4: the arm is awaited after the trigger decision, so an unmount during the
+    // await must stop the submit that follows it.
+    transcriptQueue = ['hello that is my prompt']
+    let releaseArm: () => void = () => {}
+    const voiceTurn = vi.fn((_sessionId: string): Promise<TalkVoiceTurn> => new Promise(resolve => {
+      releaseArm = () => resolve({ armed: true })
+    }))
+    mount(SETTINGS, { voiceTurn, sessionId: 'review-session' })
+    await flush()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(voiceTurn).toHaveBeenCalledTimes(1)
+    expect(sent).toEqual([])
+    unmount()
+    await act(async () => {
+      releaseArm()
+    })
+    await flush()
+    expect(sent).toEqual([])
   })
 
   it('the open segment is transcribed when the user stops mid-speech, so its words reach the draft', async () => {
