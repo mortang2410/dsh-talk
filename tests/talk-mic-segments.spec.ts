@@ -942,6 +942,28 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(sent).toEqual([])
   })
 
+  it('a trigger heal still in flight at the stop, with autoSubmit on, submits the text before the phrase once', async () => {
+    // Review round 6, R6-1: with autoSubmit on, the stop submits the cleaned text before the phrase. The trigger
+    // prompt itself is not sent, and no second heal call is made.
+    transcriptQueue = ['one thought that is my prompt']
+    holdHeals()
+    await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(healCalls).toEqual(['one thought that is my prompt'])
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    openHealGate()
+    await flush()
+    await flush()
+    expect(healCalls).toEqual(['one thought that is my prompt'])
+    expect(sent).toEqual(['one thought'])
+    expect(drafts).toEqual([])
+  })
+
   it('a stop submits the words said so far when the autoSubmit setting is on', async () => {
     // B14: the host path honours record.autoSubmit at the stop, as the Web Speech path does.
     transcriptQueue = ['first sentence']
