@@ -144,14 +144,15 @@ describe('model path: one call returns trigger and prompt from one response', ()
     expect(stub.requests).toHaveLength(1)
   })
 
-  // The six recorded outputs in HEAL-PROMPT.md, replayed as stub answers. This checks that
-  // the caller passes each recorded decision through unchanged.
+  // Recorded model answers from HEAL-PROMPT.md, replayed as stub answers. This checks that
+  // the caller passes each recorded decision through unchanged. The "problem" row is the answer
+  // under the 2026-10-25 prompt (round 3 in that file).
   // Breaks if: the caller overrides the model's trigger, or strips text on the model path.
   it.each([
     ['exact phrase', `${CLEAN} that is my prompt`, true, CLEAN],
     ['contracted, no apostrophe', `${CLEAN} thats my prompt`, true, CLEAN],
     ['misheard promt', `${CLEAN} that is my promt`, true, CLEAN],
-    ['different word problem', `${CLEAN} that is my problem`, false, `${CLEAN} that is my problem`],
+    ['problem at the end, fired by the 2026-10-25 decision', `${CLEAN} that is my problem`, true, CLEAN],
     ['different word proper', `${CLEAN} that is my proper`, false, `${CLEAN} that is my proper`],
     ['phrase followed by speech', 'that is my prompt now explain the vad', false, 'that is my prompt now explain the vad'],
   ])('%s: the recorded model answer reaches the caller as-is', async (_label, raw, trigger, prompt) => {

@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The composer microphone (host-transcription path) captures through an AudioWorklet (`capture-worklet.ts`) instead of MediaRecorder. Every audio block is judged by the pure segmenter (`speech-segmenter.ts`), and each segment is sent as 16 kHz mono 16-bit WAV encoded in the browser.
+- The heal prompt (`HEAL_SYSTEM_PROMPT`) fires on "that is my problem" when the transcript ends with it, because a recogniser often writes "problem" for "prompt". Risk: ordinary speech that ends with "that is my problem" sends a prompt. A phrase followed by more speech still stays prompt content. The prompt also collapses a repeated word or phrase of up to three words ("to go to go"), not only a single word.
 
 ### Fixed
 
