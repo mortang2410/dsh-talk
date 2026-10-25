@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resampling to 16 kHz low-passes the audio first (windowed sinc, 7.5 kHz cutoff). Before, a 10 kHz tone at 44.1 kHz or 48 kHz folded back into the speech band at 6 kHz.
 - Audio above 16 kHz is resampled to 16 kHz as it arrives, not all at once when a segment closes. Before, closing 120 s of 48 kHz speech took about 0.9 s on the page (measured in Node, not in a browser). Audio at or below 16 kHz is still converted when the segment closes.
 - A trigger whose voice-turn arm answers after the microphone button unmounts no longer submits its prompt.
+- The microphone refuses to record when the browser leaves its audio context suspended after the permission prompt, and shows the error. A suspended context produces no audio, so before, the button could start a recording that heard nothing.
 - A segment whose transcription fails is tried again, up to three calls in all, one second apart. Its words are lost only when every call fails, and the error then names the cause. Before, one failed call lost the words.
 - A stop writes the cleaned text, not the raw transcript. The stop reuses the last heal answer when no words came in after it; otherwise it makes one heal call, bounded by `HEAL_TIMEOUT_MS` (15 s). A failed heal writes the raw text, so no word is lost. A trigger phrase heard at the stop is not written: the text before it is.
 

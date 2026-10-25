@@ -641,6 +641,11 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       node.connect(gain)
       gain.connect(context.destination)
       await context.resume()
+      // A context that stays suspended after resume captures nothing, so recording would hear silence.
+      if (context.state === 'suspended') {
+        closeContext(context)
+        return null
+      }
       return { context, source, node, gain }
     } catch {
       closeContext(context)

@@ -93,6 +93,7 @@ class FakeAudioContext {
   createGain(): { gain: { value: number }; connect: () => void; disconnect: () => void } {
     return { gain: { value: 1 }, connect: () => {}, disconnect: () => {} }
   }
+  state = 'running'
   resume(): Promise<void> {
     return Promise.resolve()
   }
@@ -736,6 +737,20 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(errorText()).toBe('voice-activity detection is unavailable in this browser')
     expect(recording()).toBe(false)
     expect(workletNodes).toEqual([])
+    expect(contexts.every(context => context.closed)).toBe(true)
+    expect(trackStops).toBe(1)
+  })
+
+  it('refuses to record and shows an error when the AudioContext stays suspended after resume', async () => {
+    // B12: a suspended context captures nothing, so the button refuses to record instead of recording silence.
+    // The worklet node is created before resume, so only the teardown and the refusal are checked here.
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+      override state = 'suspended'
+    })
+    await mountAndSettle()
+    await startCapture()
+    expect(errorText()).toBe('voice-activity detection is unavailable in this browser')
+    expect(recording()).toBe(false)
     expect(contexts.every(context => context.closed)).toBe(true)
     expect(trackStops).toBe(1)
   })
