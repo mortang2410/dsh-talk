@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A trigger whose voice-turn arm answers after the microphone button unmounts no longer submits its prompt.
 - The microphone refuses to record when the browser leaves its audio context suspended after the permission prompt, and shows the error. A suspended context produces no audio, so before, the button could start a recording that heard nothing.
 - A segment whose transcription fails is tried again, up to three calls in all, one second apart. Its words are lost only when every call fails, and the error then names the cause. Before, one failed call lost the words.
-- A stop writes the cleaned text, not the raw transcript. The stop reuses the last heal answer when no words came in after it; otherwise it makes one heal call, bounded by `HEAL_TIMEOUT_MS` (15 s). A failed heal writes the raw text, so no word is lost. A trigger phrase heard at the stop is not written: the text before it is.
+- A stop writes the cleaned text, not the raw transcript. The stop reuses the last heal answer when no words came in after it, including a trigger answer that arrives during the stop (no second heal call, nothing sent). Otherwise it makes one heal call, bounded by `HEAL_TIMEOUT_MS` (15 s). A failed heal writes the raw text, so no word is lost. A trigger phrase heard at the stop is not written: the text before it is.
 
 ## [0.3.18] - 2026-10-05
 

@@ -210,8 +210,9 @@ interface SegmentedCapture {
   /** The raw transcripts of every segment so far, joined with single spaces. */
   accumulated: string
   /**
-   * The last heal answer that did not fire: the accumulated text it judged (`raw`) and the cleaned text
-   * it gave (`text`). The stop reuses it when no words came in after it. Null after a trigger.
+   * The last heal answer: the accumulated text it judged (`raw`) and the cleaned text it gave (`text`).
+   * The stop reuses it when no words came in after it. Null after a trigger that started a new prompt;
+   * a trigger answered during the stop stores the text before its phrase.
    */
   cleaned: { raw: string; text: string } | null
   /** Set once the capture is ending (stop or the 120-second timeout). Nothing new is detected or asked of heal. */
@@ -772,9 +773,12 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       capture.cleaned = { raw: capture.accumulated, text: prompt === '' ? capture.accumulated.trim() : prompt }
       return
     }
-    // A trigger answered after the capture began ending is not acted on: the stop heals the text
-    // again (finalText), so the phrase is handled once, at the stop.
-    if (capture.closing) return
+    // A trigger answered after the capture began ending is not acted on and not submitted. Its text
+    // before the phrase becomes the stop's cleaned text, so the stop does not heal these words again.
+    if (capture.closing) {
+      capture.cleaned = { raw: capture.accumulated, text: decision.prompt.trim() }
+      return
+    }
     // The trigger sends what was said so far and starts the next prompt from empty. The
     // capture stays open: only a stop or the 120-second timeout ends it. The mic phase is not
     // touched here, because 'transcribed' and 'reset' would show the mic as idle while
