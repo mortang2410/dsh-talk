@@ -746,7 +746,13 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     if (capture.abandoned) return
     console.log('[dsh-talk] segment raw transcript:', raw)
     const text = raw.trim()
-    if (text === '') return
+    if (text === '') {
+      // The segment had no words. Say so, rather than show nothing after the speech was cut.
+      setMic(foldMic(micRef.current, { kind: 'notice', message: 'no words recognised in that segment' }))
+      return
+    }
+    // Words arrived, so the note about an earlier empty segment no longer applies.
+    setMic(foldMic(micRef.current, { kind: 'notice', message: undefined }))
     capture.accumulated = capture.accumulated === '' ? text : `${capture.accumulated} ${text}`
     if (capture.closing) return
     let decision: TalkHeal
@@ -1336,6 +1342,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
         : null}
       {mic.phase === 'error' && mic.error !== undefined
         ? <span data-dsh-talk-mic-error role="alert">{mic.error}</span>
+        : null}
+      {mic.notice !== undefined
+        ? <span data-dsh-talk-mic-notice role="status">{mic.notice}</span>
         : null}
     </>
   )

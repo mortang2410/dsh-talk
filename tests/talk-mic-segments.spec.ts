@@ -250,6 +250,10 @@ function errorText(): string | null {
   return container.querySelector('[data-dsh-talk-mic-error]')?.textContent ?? null
 }
 
+function noticeText(): string | null {
+  return container.querySelector('[data-dsh-talk-mic-notice]')?.textContent ?? null
+}
+
 function recording(): boolean {
   return button().dataset['recording'] === 'true'
 }
@@ -790,6 +794,22 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     })
     await flush()
     expect(drafts).toEqual(['second sentence'])
+  })
+
+  it('an empty segment shows a short note instead of nothing, and the next words clear the note', async () => {
+    // B2: a segment with no words is not silent on the page. The note is not an error, and the capture stays open.
+    transcriptQueue = ['', 'first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(noticeText()).toBe('no words recognised in that segment')
+    expect(errorText()).toBeNull()
+    expect(recording()).toBe(true)
+    await speak(1000)
+    await advance(1000)
+    expect(noticeText()).toBeNull()
+    expect(recording()).toBe(true)
   })
 
   it('a transcription that fails once and then succeeds shows no error, and its words reach the draft', async () => {

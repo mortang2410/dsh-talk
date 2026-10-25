@@ -32,4 +32,19 @@ describe('foldMic', () => {
     expect(state.error).toBeUndefined()
   })
 
+  it('shows a notice while the phase stays recording, and clears it on a clear event or a new press', () => {
+    let state = initMic()
+    state = foldMic(state, { kind: 'press' })
+    state = foldMic(state, { kind: 'notice', message: 'no words recognised in that segment' })
+    expect(state.phase).toBe('recording')
+    expect(state.notice).toBe('no words recognised in that segment')
+    state = foldMic(state, { kind: 'tick', elapsedSec: 2 })
+    expect(state.notice).toBe('no words recognised in that segment')
+    state = foldMic(state, { kind: 'notice', message: undefined })
+    expect(state.notice).toBeUndefined()
+    state = foldMic(state, { kind: 'notice', message: 'no words recognised in that segment' })
+    state = foldMic(state, { kind: 'press' })
+    expect(state.notice).toBeUndefined()
+  })
+
 })

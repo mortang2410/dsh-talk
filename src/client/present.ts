@@ -19,6 +19,8 @@ export interface MicViewModel {
   lastText: string
   /** Sanitized failure note when phase is error. */
   error: string | undefined
+  /** A short, non-error note about the last segment (for example, that it had no words). Undefined when none. */
+  notice: string | undefined
 }
 
 /** An event the recorder state can receive. */
@@ -29,6 +31,8 @@ export type MicEvent =
   | { kind: 'transcribed'; text: string }
   | { kind: 'failed'; message: string }
   | { kind: 'reset' }
+  /** Set the note; `undefined` clears it. */
+  | { kind: 'notice'; message: string | undefined }
 
 /**
  * Fold one event into the view model. The caller drives `tick` with the current
@@ -41,7 +45,7 @@ export type MicEvent =
 export function foldMic(state: MicViewModel, event: MicEvent): MicViewModel {
   switch (event.kind) {
     case 'press':
-      return { phase: 'recording', elapsedSec: 0, lastText: state.lastText, error: undefined }
+      return { phase: 'recording', elapsedSec: 0, lastText: state.lastText, error: undefined, notice: undefined }
     case 'tick':
       return state.phase === 'recording'
         ? { ...state, elapsedSec: event.elapsedSec }
@@ -49,11 +53,13 @@ export function foldMic(state: MicViewModel, event: MicEvent): MicViewModel {
     case 'stopped':
       return { ...state, phase: 'transcribing' }
     case 'transcribed':
-      return { phase: 'idle', elapsedSec: 0, lastText: event.text.trim(), error: undefined }
+      return { phase: 'idle', elapsedSec: 0, lastText: event.text.trim(), error: undefined, notice: undefined }
     case 'failed':
-      return { phase: 'error', elapsedSec: 0, lastText: state.lastText, error: event.message }
+      return { phase: 'error', elapsedSec: 0, lastText: state.lastText, error: event.message, notice: undefined }
     case 'reset':
-      return { phase: 'idle', elapsedSec: 0, lastText: state.lastText, error: undefined }
+      return { ...state, phase: 'idle', elapsedSec: 0, error: undefined }
+    case 'notice':
+      return { ...state, notice: event.message }
     default:
       return state
   }
@@ -61,7 +67,7 @@ export function foldMic(state: MicViewModel, event: MicEvent): MicViewModel {
 
 /** The idle start state. */
 export function initMic(): MicViewModel {
-  return { phase: 'idle', elapsedSec: 0, lastText: '', error: undefined }
+  return { phase: 'idle', elapsedSec: 0, lastText: '', error: undefined, notice: undefined }
 }
 
 /** What the stop control knows at the moment of a press. */
