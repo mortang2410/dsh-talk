@@ -186,6 +186,7 @@ function mount(): void {
     status: async () => SETTINGS,
     interrupt: async () => ({ stopped: false }),
     transcribe: async () => ({ text: '', engine: 'whisper', language: 'en' }),
+    logTranscript: async () => ({ path: '/tmp/dsh-talk-transcripts-test.jsonl' }),
     audio: async (utteranceId: string) => {
       const entry: TalkAudio = { utteranceId, mime: 'audio/mpeg', data: 'AAAA', text: '', engine: 'edge-tts' }
       return entry

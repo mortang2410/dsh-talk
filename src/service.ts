@@ -30,7 +30,8 @@ import {
 } from './settings-patch.ts'
 import { appendSpeechEvent } from './speech.ts'
 import type { DshTalkSpeechEvent, SpeechReason, SpeechTtsEngine } from './speech.ts'
-import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkSettingsInput, TalkSettingsResult, TalkStatus, TalkTranscript, TalkVoiceTurn } from './wire.ts'
+import { appendTranscriptLog } from './transcript-log.ts'
+import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkSettingsInput, TalkSettingsResult, TalkStatus, TalkTranscript, TalkTranscriptLogEntry, TalkTranscriptLogResult, TalkVoiceTurn } from './wire.ts'
 import { VoiceTurns } from './voice-turn.ts'
 
 /** Profile patch-layer filename the settings panel appends to. */
@@ -473,6 +474,18 @@ export class TalkService extends TypertRemoteService {
   async heal(rawTranscript: string): Promise<TalkHeal> {
     const decision = await healTranscript(rawTranscript)
     return { trigger: decision.trigger, prompt: decision.prompt, source: decision.source }
+  }
+
+  /**
+   * Append one stop to the host's transcript trail: the raw words beside the cleaned text,
+   * which path produced it, and where it went. The client calls this at every stop, after the
+   * text is placed, and ignores a failure so the stop itself never depends on the trail.
+   *
+   * @param entry - the raw transcript, the cleaned text, its source, and the action taken.
+   * @returns the trail file the line was appended to.
+   */
+  async logTranscript(entry: TalkTranscriptLogEntry): Promise<TalkTranscriptLogResult> {
+    return { path: await appendTranscriptLog(entry) }
   }
 
   /**

@@ -307,6 +307,44 @@ export const TALK_HEAL_SCHEMA = z.object({
   source: z.union([z.literal('model'), z.literal('fallback')]),
 })
 
+/** Which path produced the text a stop used: the model, the literal fallback, or the raw text a failed heal left. */
+export type TalkTranscriptSource = 'model' | 'fallback' | 'raw'
+
+/** Where the stop's text went. `submit` means it was handed to the composer's submit. */
+export type TalkTranscriptAction = 'draft' | 'submit' | 'none'
+
+/**
+ * One stop, appended to the host's transcript trail. `raw` is the transcript exactly as the
+ * recogniser left it, so any cleanup can be checked against what the speaker actually said.
+ */
+export interface TalkTranscriptLogEntry {
+  /** The raw transcript, before any cleanup. */
+  raw: string
+  /** The text the stop used: the cleaned prompt, the raw text, or '' when the phrase was all that was said. */
+  cleaned: string
+  /** Which path produced `cleaned`. */
+  source: TalkTranscriptSource
+  /** Where `cleaned` went. */
+  action: TalkTranscriptAction
+}
+
+/** Result of `talk/logTranscript`: the file the line was appended to. */
+export interface TalkTranscriptLogResult {
+  /** Absolute path of the monthly trail file. */
+  path: string
+}
+
+/** Strict wire schema for {@link TalkTranscriptLogEntry}. */
+export const TALK_TRANSCRIPT_LOG_SCHEMA = z.object({
+  raw: z.string(),
+  cleaned: z.string(),
+  source: z.union([z.literal('model'), z.literal('fallback'), z.literal('raw')]),
+  action: z.union([z.literal('draft'), z.literal('submit'), z.literal('none')]),
+})
+
+/** Strict wire schema for {@link TalkTranscriptLogResult}. */
+export const TALK_TRANSCRIPT_LOG_RESULT_SCHEMA = z.object({ path: z.string() })
+
 /** Frozen source position both faces carry (diagnostics only). */
 const SOURCE = Object.freeze({ file: 'src/wire.ts', line: 1, column: 1 })
 
@@ -373,6 +411,27 @@ export const TALK_HEAL_DESCRIPTOR = Object.freeze({
     codec: strictWire('dsh-talk/types#TalkHealRawTranscript', z.string()),
   } satisfies InvocationDescriptor['parameters'][number])]),
   result: strictWire('dsh-talk/types#TalkHeal', TALK_HEAL_SCHEMA),
+  sourceLocation: SOURCE,
+} as const) satisfies InvocationDescriptor
+
+/**
+ * The `talk/logTranscript` invocation descriptor. The client sends every stop's raw and
+ * cleaned text, and the host appends one line to its trail file, because the browser cannot
+ * write there itself.
+ */
+export const TALK_LOG_TRANSCRIPT_DESCRIPTOR = Object.freeze({
+  id: 'dsh-talk#talk/logTranscript',
+  service: 'talk',
+  namespace: 'talk',
+  method: 'logTranscript',
+  invocation: Object.freeze({ kind: 'direct' }),
+  parameters: Object.freeze([Object.freeze({
+    name: 'entry',
+    wire: 'entry',
+    source: 'json',
+    codec: strictWire('dsh-talk/types#TalkTranscriptLogEntry', TALK_TRANSCRIPT_LOG_SCHEMA),
+  } satisfies InvocationDescriptor['parameters'][number])]),
+  result: strictWire('dsh-talk/types#TalkTranscriptLogResult', TALK_TRANSCRIPT_LOG_RESULT_SCHEMA),
   sourceLocation: SOURCE,
 } as const) satisfies InvocationDescriptor
 
@@ -457,6 +516,7 @@ export const TALK_INVOCATIONS = Object.freeze([
   TALK_AUDIO_DESCRIPTOR,
   TALK_TRANSCRIBE_DESCRIPTOR,
   TALK_HEAL_DESCRIPTOR,
+  TALK_LOG_TRANSCRIPT_DESCRIPTOR,
   TALK_APPLY_SETTINGS_DESCRIPTOR,
   TALK_INTERRUPT_DESCRIPTOR,
   TALK_LATEST_DESCRIPTOR,

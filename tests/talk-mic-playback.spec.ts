@@ -114,6 +114,7 @@ function mount(settings: TalkStatus = SETTINGS): void {
     status: async () => settings,
     interrupt: async () => ({ stopped: false }),
     transcribe: async () => ({ text: '', engine: 'whisper', language: 'en' }),
+    logTranscript: async () => ({ path: '/tmp/dsh-talk-transcripts-test.jsonl' }),
     audio: async (utteranceId: string) => {
       remote.audioCalls.push(utteranceId)
       const entry: TalkAudio = { utteranceId, mime: 'audio/mpeg', data: 'AAAA', text: '', engine: 'edge-tts' }

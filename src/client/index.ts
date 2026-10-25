@@ -38,6 +38,7 @@ import type {
   TalkSettingsResult,
   TalkStatus,
   TalkTranscript,
+  TalkTranscriptLogResult,
   TalkVoiceTurn,
 } from '../wire.ts'
 
@@ -134,6 +135,8 @@ export async function apply(ctx: Context): Promise<void> {
       unwrap<TalkTranscript>(await talk.transcribe(audioData), 'transcribe')
     const heal: TalkMicInjected['heal'] = async (rawTranscript) =>
       unwrap<TalkHeal>(await talk.heal(rawTranscript), 'heal')
+    const logTranscript: TalkMicInjected['logTranscript'] = async (entry) =>
+      unwrap<TalkTranscriptLogResult>(await talk.logTranscript(entry), 'logTranscript')
     const audio: TalkMicInjected['audio'] = async (utteranceId) =>
       unwrap<TalkAudio | null>(await talk.audio(utteranceId), 'audio')
     // The poll's signal reaches the RPC request, so a timed-out read is cancelled.
@@ -219,7 +222,7 @@ export async function apply(ctx: Context): Promise<void> {
       name: 'conversation.input.left',
       id: 'talk-mic',
       order: 20,
-      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, audio, latest, voiceTurn, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel: t('stop'), cancelLabel: t('cancelTurn') }),
+      inject: (): TalkMicInjected => ({ status, interrupt, transcribe, heal, logTranscript, audio, latest, voiceTurn, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel: t('stop'), cancelLabel: t('cancelTurn') }),
     }, TalkMicButton))
 
     slots.inject('settings.plugins.tab', () => slots.register({

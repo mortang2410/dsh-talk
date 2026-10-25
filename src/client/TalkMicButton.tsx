@@ -40,7 +40,19 @@ import {
   startSpeechPoll,
 } from './speechPoll.ts'
 import { encodeWav16kMono } from './wav.ts'
-import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript, TalkVoiceTurn } from '../wire.ts'
+import type {
+  TalkAudio,
+  TalkHeal,
+  TalkInterruptResult,
+  TalkLatest,
+  TalkStatus,
+  TalkTranscript,
+  TalkTranscriptAction,
+  TalkTranscriptLogEntry,
+  TalkTranscriptLogResult,
+  TalkTranscriptSource,
+  TalkVoiceTurn,
+} from '../wire.ts'
 
 /** Registration-side injected face: the recorder's host/browser bindings. */
 export interface TalkMicInjected {
@@ -52,6 +64,8 @@ export interface TalkMicInjected {
   transcribe: (audioData: string) => Promise<TalkTranscript>
   /** Heal the accumulated raw transcript on the host; the host makes the one model call. */
   heal: (rawTranscript: string) => Promise<TalkHeal>
+  /** Append one stop's raw and cleaned text to the host's transcript trail. */
+  logTranscript: (entry: TalkTranscriptLogEntry) => Promise<TalkTranscriptLogResult>
   /** Serve one cached utterance's audio. */
   audio: (utteranceId: string) => Promise<TalkAudio | null>
   /** Read the newest utterance of one session (playback poll). */
@@ -210,11 +224,12 @@ interface SegmentedCapture {
   /** The raw transcripts of every segment so far, joined with single spaces. */
   accumulated: string
   /**
-   * The last heal answer: the accumulated text it judged (`raw`) and the cleaned text it gave (`text`).
-   * The stop reuses it when no words came in after it. Null after a trigger that started a new prompt;
-   * a trigger answered during the stop stores the text before its phrase.
+   * The last heal answer: the accumulated text it judged (`raw`), the cleaned text it gave
+   * (`text`), and which path produced it. The stop reuses it when no words came in after it.
+   * Null after a trigger that started a new prompt; a trigger answered during the stop stores
+   * the text before its phrase.
    */
-  cleaned: { raw: string; text: string } | null
+  cleaned: { raw: string; text: string; source: TalkTranscriptSource } | null
   /** Set once the capture is ending (stop or the 120-second timeout). Nothing new is detected or asked of heal. */
   closing: boolean
   /** Set on unmount. Nothing from this capture is transcribed into the draft or submitted after it. */
@@ -501,7 +516,7 @@ function playAudioEntry(
  * @returns the button element.
  */
 export function TalkMicButton(props: TalkMicProps): ReactNode {
-  const { status, interrupt, transcribe, heal, audio, latest, voiceTurn, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel = '', cancelLabel = '' } = props
+  const { status, interrupt, transcribe, heal, logTranscript, audio, latest, voiceTurn, setDraft, send, forSession, watchTurn, cancelTurn, stopLabel = '', cancelLabel = '' } = props
   const inputActions = (props as Partial<Record<'inputActions', RuntimeInputActions>>).inputActions
   const sessionIdProp = (props as Partial<Record<'sessionId', unknown>>).sessionId
   const writeDraft = (text: string): void => {
@@ -672,33 +687,45 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     capture.queue = capture.queue.then(job).catch(() => {})
   }
 
-  // The cleaned text of the words said since the last trigger, for the stop. The heal answer that judged
-  // the same text is reused. Otherwise the host heals it now, with the same bounded call. A failed call
-  // gives the raw text, so no word is lost. A trigger heard here gives the text before the phrase; the
-  // stop submits it only when autoSubmit is on, and otherwise writes it to the composer.
-  const finalText = async (capture: SegmentedCapture): Promise<string> => {
+  // The cleaned text of the words said since the last trigger, for the stop, and which path produced it.
+  // The heal answer that judged the same text is reused. Otherwise the host heals it now, with the same
+  // bounded call. A failed call gives the raw text, so no word is lost. A trigger heard here gives the
+  // text before the phrase; the stop submits it only when autoSubmit is on, and otherwise writes it to
+  // the composer.
+  const finalText = async (capture: SegmentedCapture): Promise<{ text: string; source: TalkTranscriptSource }> => {
     const raw = capture.accumulated.trim()
-    if (raw === '') return ''
-    if (capture.cleaned !== null && capture.cleaned.raw === capture.accumulated) return capture.cleaned.text
+    if (raw === '') return { text: '', source: 'raw' }
+    if (capture.cleaned !== null && capture.cleaned.raw === capture.accumulated) {
+      return { text: capture.cleaned.text, source: capture.cleaned.source }
+    }
     try {
       const decision = await heal(capture.accumulated)
       const text = decision.prompt.trim()
-      return !decision.trigger && text === '' ? raw : text
+      return { text: !decision.trigger && text === '' ? raw : text, source: decision.source }
     } catch {
-      return raw
+      return { text: raw, source: 'raw' }
     }
   }
 
   // The final step: release the microphone, then put the words said since the last trigger in the composer,
   // cleaned. With the autoSubmit setting on, they are submitted instead, as the Web Speech path does.
-  // A trigger clears that text, so no sent prompt is put back.
+  // A trigger clears that text, so no sent prompt is put back. Every stop with words appends one line to
+  // the host's transcript trail, so the raw words stay beside the cleaned text.
   const finalizeCapture = async (capture: SegmentedCapture): Promise<void> => {
     capture.stream.getTracks().forEach(track => track.stop())
     if (captureRef.current === capture) captureRef.current = null
     syncListening()
     if (capture.abandoned) return
-    const text = await finalText(capture)
+    const { text, source } = await finalText(capture)
     if (capture.abandoned) return
+    const action: TalkTranscriptAction = text === '' ? 'none' : settingsRef.current?.record.autoSubmit === true ? 'submit' : 'draft'
+    if (capture.accumulated.trim() !== '') {
+      // A failed trail write must never fail the stop: the words are already transcribed.
+      void logTranscript({ raw: capture.accumulated, cleaned: text, source, action })
+        .catch((error: unknown) => {
+          console.warn('[dsh-talk] transcript trail write failed:', error)
+        })
+    }
     if (text === '') {
       setMic(foldMic(micRef.current, { kind: 'reset' }))
       return
@@ -770,19 +797,20 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     if (!decision.trigger) {
       // The cleaned text of this answer. The stop writes it, unless more words came in first.
       const prompt = decision.prompt.trim()
-      capture.cleaned = { raw: capture.accumulated, text: prompt === '' ? capture.accumulated.trim() : prompt }
+      capture.cleaned = { raw: capture.accumulated, text: prompt === '' ? capture.accumulated.trim() : prompt, source: decision.source }
       return
     }
     // A trigger answered after the capture began ending is not acted on and not submitted. Its text
     // before the phrase becomes the stop's cleaned text, so the stop does not heal these words again.
     if (capture.closing) {
-      capture.cleaned = { raw: capture.accumulated, text: decision.prompt.trim() }
+      capture.cleaned = { raw: capture.accumulated, text: decision.prompt.trim(), source: decision.source }
       return
     }
     // The trigger sends what was said so far and starts the next prompt from empty. The
     // capture stays open: only a stop or the 120-second timeout ends it. The mic phase is not
     // touched here, because 'transcribed' and 'reset' would show the mic as idle while
-    // the recorder keeps running.
+    // the recorder keeps running. The words are kept for the trail before the reset.
+    const spoken = capture.accumulated
     capture.accumulated = ''
     capture.cleaned = null
     const prompt = decision.prompt.trim()
@@ -798,6 +826,11 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
     // The button may have unmounted while the arm was in flight: no prompt is submitted then.
     if (capture.abandoned) return
+    // A trigger's prompt is a voice prompt too, so the trail records it like a submitted stop.
+    void logTranscript({ raw: spoken, cleaned: prompt, source: decision.source, action: 'submit' })
+      .catch((error: unknown) => {
+        console.warn('[dsh-talk] transcript trail write failed:', error)
+      })
     void submitText(prompt)
   }
 

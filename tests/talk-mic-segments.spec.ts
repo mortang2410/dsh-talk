@@ -15,7 +15,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { CAPTURE_FLUSH_MESSAGE } from '../src/client/capture-worklet.ts'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
 import { healTranscript } from '../src/heal.ts'
-import type { TalkHeal, TalkStatus, TalkTranscript, TalkVoiceTurn } from '../src/wire.ts'
+import type { TalkHeal, TalkStatus, TalkTranscript, TalkTranscriptLogEntry, TalkVoiceTurn } from '../src/wire.ts'
 
 const TICK_MS = 500
 /** The capture rate. At 16 kHz a 1000-sample block is 62.5 ms, and no resampling happens. */
@@ -72,6 +72,10 @@ let healMode: 'model' | 'error' = 'model'
 const drafts: string[] = []
 /** Texts the button submitted. */
 const sent: string[] = []
+/** Every transcript-trail entry the button sent to the host, in order. */
+const transcriptLog: TalkTranscriptLogEntry[] = []
+/** When true, the host's trail write fails, and the stop must not care. */
+let logFails = false
 /** Every audio context the button opened, in order. */
 const contexts: FakeAudioContext[] = []
 /** Every capture worklet node the button created, in order. The test feeds blocks to their ports. */
@@ -221,6 +225,11 @@ function mount(settings: TalkStatus = SETTINGS, extra: Record<string, unknown> =
     },
     audio: async () => null,
     latest: async () => null,
+    logTranscript: async (entry: TalkTranscriptLogEntry) => {
+      if (logFails) throw new Error('trail down')
+      transcriptLog.push(entry)
+      return { path: '/tmp/dsh-talk-transcripts-test.jsonl' }
+    },
     setDraft: (text: string) => {
       drafts.push(text)
     },
@@ -310,6 +319,8 @@ beforeEach(() => {
   fetched.length = 0
   drafts.length = 0
   sent.length = 0
+  transcriptLog.length = 0
+  logFails = false
   transcriptQueue = []
   micLevel = 0
   healMode = 'model'
@@ -996,5 +1007,65 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await flush()
     expect(sent).toEqual(['first sentence'])
     expect(drafts).toEqual([])
+  })
+
+  it('a stop appends the raw text, the cleaned text, and the draft action to the transcript trail', async () => {
+    // The trail: the raw words stay beside the cleaned text, so the model's cleanup can be checked.
+    transcriptQueue = ['um first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(transcriptLog).toEqual([
+      { raw: 'um first sentence', cleaned: 'first sentence', source: 'model', action: 'draft' },
+    ])
+  })
+
+  it('the trail records a submitted stop as submit, and a trigger prompt as submit too', async () => {
+    transcriptQueue = ['um first sentence']
+    await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(transcriptLog).toEqual([
+      { raw: 'um first sentence', cleaned: 'first sentence', source: 'model', action: 'submit' },
+    ])
+    transcriptLog.length = 0
+    transcriptQueue = ['write a haiku that is my prompt']
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await flush()
+    expect(sent).toContain('write a haiku')
+    expect(transcriptLog).toEqual([
+      { raw: 'write a haiku that is my prompt', cleaned: 'write a haiku', source: 'model', action: 'submit' },
+    ])
+  })
+
+  it('a failed trail write leaves the stop untouched and writes the draft', async () => {
+    // The trail is a record, not a dependency: losing it must not lose the words.
+    logFails = true
+    transcriptQueue = ['um first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['first sentence'])
+    expect(transcriptLog).toEqual([])
   })
 })

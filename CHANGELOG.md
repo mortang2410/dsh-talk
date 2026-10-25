@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every stop appends one line to `~/.dsh/logs/dsh-talk/transcripts-YYYY-MM.jsonl` (mode 600): the raw transcript beside the cleaned text, which path produced it (`model`, `fallback`, or `raw` after a failed heal), and what happened to the text (`draft`, `submit`, or `none`). A prompt a trigger sends mid-capture is recorded the same way. The original words are kept, so the model's cleanup can always be checked against them. A failed trail write is logged and never blocks the stop. Files are not pruned; delete a month's file to drop it.
+
 ### Changed
 
 - The composer microphone (host-transcription path) captures through an AudioWorklet (`capture-worklet.ts`) instead of MediaRecorder. Every audio block is judged by the pure segmenter (`speech-segmenter.ts`), and each segment is sent as 16 kHz mono 16-bit WAV encoded in the browser.
