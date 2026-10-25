@@ -302,3 +302,99 @@ function logToConsole(rawTranscript: string): void {
 function warnToConsole(message: string): void {
   console.warn(message)
 }
+
+/**
+ * The windowed cleanup prompt. The request carries two labeled blocks: CONTEXT is earlier
+ * speech the model must not clean or return, and TEXT TO CLEAN is the only text it cleans.
+ * The reply has no `trigger` field. The trigger phrase stays in the prompt as ordinary words,
+ * and the client's matcher decides where the cut falls, so the model never decides the trigger.
+ */
+export const HEAL_WINDOW_SYSTEM_PROMPT = `You clean one piece of a raw speech transcript. The user message has a labeled TEXT TO CLEAN block and, sometimes, a labeled CONTEXT block before it. Reply with JSON only: {"prompt": "<the cleaned TEXT TO CLEAN>"}. Clean only TEXT TO CLEAN and return only that. CONTEXT is earlier speech that is already handled: do not clean it and do not return it. Use CONTEXT only to settle a filler, a repeat or a false start that crosses the boundary between the two blocks. Keep the trigger phrase ("that is my prompt", "that's my prompt" or a close variant such as "thats my prompt", "that is my problem" or "promt") exactly as spoken wherever it occurs, and keep an unfinished trigger prefix at the end of TEXT TO CLEAN, such as "that is my", exactly as spoken. Never remove the trigger phrase or such a prefix as filler or as a false start. Treat the trigger phrase as ordinary speech, never a reason to stop, to cut the text short or to end early. Remove filler words such as "um", "uh" and "er", remove false starts, and collapse a word or phrase of up to three words repeated immediately, such as "the the", to one copy. Drop a leading discourse marker such as "so", "okay" or "well" from the start of TEXT TO CLEAN only when there is no CONTEXT block. Never change any other wording.`
+
+/** What a windowed cleanup call returns. */
+export interface HealWindowResult {
+  /** The cleaned TEXT TO CLEAN when `source` is `model`; the raw newest text unchanged when `raw`. */
+  prompt: string
+  /** `model` when the model answered with a usable prompt; `raw` for every failure. */
+  source: 'model' | 'raw'
+}
+
+/**
+ * Clean the newest speech with one labeled block of earlier speech as context.
+ *
+ * `context` is the client's fixed window of earlier raw words, empty when there are none.
+ * `text` is the newest raw speech, the only text the model cleans and returns. Nothing
+ * else from the transcript reaches the request, so the request size is bounded by the window
+ * and the newest segment, however long the capture runs.
+ *
+ * Never throws. Any failure returns `text` with source `raw`, so the caller glues a segment
+ * the same way whether or not the model answered. A truncated answer (`finish_reason`
+ * `length`) counts as a failure: the output cap cut it off, so it may hold half a sentence,
+ * and half a cleaned sentence is not a cleaned one. A valid empty prompt is a success: every
+ * word was filler, and the caller must append nothing instead of putting the raw words back.
+ */
+export async function healWindow(context: string, text: string, options?: { endpoint?: string; timeoutMs?: number }): Promise<HealWindowResult> {
+  try {
+    const prompt = await callWindowModel(windowUserMessage(context, text), options?.endpoint ?? HEAL_ENDPOINT, options?.timeoutMs ?? HEAL_TIMEOUT_MS)
+    return { prompt, source: 'model' }
+  } catch {
+    return { prompt: text, source: 'raw' }
+  }
+}
+
+/**
+ * The one user message of a windowed call. The labels are what the system prompt refers to:
+ * CONTEXT is named as not to be cleaned or returned, so the model cannot mistake earlier
+ * speech for the draft. An empty context omits its block, because a labeled CONTEXT block
+ * with nothing in it would be an instruction with nothing to settle.
+ */
+function windowUserMessage(context: string, text: string): string {
+  const toClean = `TEXT TO CLEAN (return the cleaned version of exactly this): ${text}`
+  if (context === '') return toClean
+  return `CONTEXT (earlier speech, do not clean, do not return): ${context}\n${toClean}`
+}
+
+/**
+ * One POST for a windowed call, and the prompt string from its answer. The request matches
+ * `callModel` field for field (route, model, temperature, token cap, reasoning effort and the
+ * JSON-object response mode), so only the messages differ. Throws for every answer the caller
+ * must treat as raw; `healWindow` turns the throw into the raw result.
+ */
+async function callWindowModel(userMessage: string, endpoint: string, timeoutMs: number): Promise<string> {
+  const requestBody = {
+    model: HEAL_MODEL,
+    temperature: 0,
+    max_tokens: 300,
+    reasoning_effort: 'none',
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: HEAL_WINDOW_SYSTEM_PROMPT },
+      { role: 'user', content: userMessage },
+    ],
+  }
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(requestBody),
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!response.ok) throw new HealFailure(`endpoint responded ${String(response.status)}`)
+  const envelope = parseJson(await response.text(), 'response body')
+  // Checked before the content is parsed: a cut answer can still be valid JSON with a
+  // `prompt` string, and that string would be a sentence the model never finished.
+  if (finishReason(envelope) === 'length') throw new HealFailure('output cap reached (finish_reason length)')
+  const content = messageContent(envelope)
+  if (typeof content !== 'string' || content === '') throw new HealFailure('response has no message content')
+  const answer = parseJson(content, 'message content')
+  if (!isRecord(answer)) throw new HealFailure('message content is not a JSON object')
+  const { prompt } = answer
+  if (typeof prompt !== 'string') throw new HealFailure('message content has no string prompt')
+  return prompt
+}
+
+/** The `finish_reason` of the first choice of a chat-completions body, or `undefined`. */
+function finishReason(envelope: unknown): unknown {
+  if (!isRecord(envelope) || !Array.isArray(envelope['choices'])) return undefined
+  const first: unknown = envelope['choices'][0]
+  return isRecord(first) ? first['finish_reason'] : undefined
+}
