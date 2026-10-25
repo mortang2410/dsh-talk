@@ -5,7 +5,7 @@
 
 **DeepSeek Harness के लिए वॉइस-फर्स्ट सत्र लूप: उससे बोलें और उत्तर सुनें।**
 
-*माइक दबाएँ, बोलें और जवाब ज़ोर से पढ़ा जाता है — बोलते ही रुकावट।*
+*माइक दबाएँ, बोलें और जवाब ज़ोर से पढ़ा जाता है - बोलते ही रुकावट।*
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Gitee](https://img.shields.io/badge/Gitee-mirror-c71d23?logo=gitee)](https://gitee.com/perrylink/dsh-talk)
@@ -26,22 +26,22 @@
 ---
 
 
-**📖 इकोसिस्टम नॉलेज बेस** — मापे गए आँकड़े, मार्केटिंग नहीं: [डेवलपमेंट गाइड · चयन डेटा · रखरखाव मानदंड](https://perrylink.github.io/dsh-plugin-guide/)।
+**📖 इकोसिस्टम नॉलेज बेस** - मापे गए आँकड़े, मार्केटिंग नहीं: [डेवलपमेंट गाइड · चयन डेटा · रखरखाव मानदंड](https://perrylink.github.io/dsh-plugin-guide/)।
 
 <!-- star-cta -->
 ## ⭐ 如果它帮到了你
 
-यह प्लगइन [DSH प्लगइन परिवार](https://github.com/PerryLink) का हिस्सा है (40+ प्लगइन, सभी Apache-2.0)। अगर यह उपयोगी लगे, तो **एक स्टार दें** — इससे कोई सुविधा अनलॉक नहीं होती, पर अगला व्यक्ति इसे खोज में आसानी से पा लेता है।
+यह प्लगइन [DSH प्लगइन परिवार](https://github.com/PerryLink) का हिस्सा है (40+ प्लगइन, सभी Apache-2.0)। अगर यह उपयोगी लगे, तो **एक स्टार दें** - इससे कोई सुविधा अनलॉक नहीं होती, पर अगला व्यक्ति इसे खोज में आसानी से पा लेता है।
 
-*English:* part of a 40+ plugin family for DeepSeek Harness. If it is useful, **a star helps the next person find it** — nothing is gated behind it.
+*English:* part of a 40+ plugin family for DeepSeek Harness. If it is useful, **a star helps the next person find it** - nothing is gated behind it.
 
 ## What is dsh-talk?
 
 DeepSeek Harness के लिए वॉइस-फर्स्ट सत्र लूप: उससे बोलें और उत्तर सुनें।
 
-माइक दबाएँ, बोलें और जवाब ज़ोर से पढ़ा जाता है — बोलते ही रुकावट।
+माइक दबाएँ, बोलें और जवाब ज़ोर से पढ़ा जाता है - बोलते ही रुकावट।
 
-![dsh-talk का टर्मिनल डेमो: dsh-talk — install, verify the row, then talk to the session](https://raw.githubusercontent.com/PerryLink/dsh-talk/main/docs/assets/dsh-talk-demo.png)
+![dsh-talk का टर्मिनल डेमो: dsh-talk - install, verify the row, then talk to the session](https://raw.githubusercontent.com/PerryLink/dsh-talk/main/docs/assets/dsh-talk-demo.png)
 
 ![Animated terminal demo of dsh-talk](https://raw.githubusercontent.com/PerryLink/dsh-talk/main/docs/assets/dsh-talk-demo.gif)
 
@@ -59,11 +59,11 @@ DeepSeek Harness के लिए वॉइस-फर्स्ट सत्र �
 
 `dsh-talk` वॉइस लूप को दोनों दिशाओं में बंद करता है:
 
-- **`speak` टूल** — एजेंट अपने उत्तर ज़ोर से पढ़ता है। TTS इंजन: ब्राउज़र वॉइस, `edge-tts` (नेटवर्क न्यूरल वॉइस) या `piper` (स्थानीय)। ऑडियो ब्राउज़र में बजता है; जो host इसे वहन कर सकते हैं वहाँ सत्र लॉग सैनिटाइज़ की गई बात दर्ज करता है (सुरक्षा सीमाएँ देखें)।
-- **कंपोज़र माइक बटन** — दबाएँ, बोलें और ट्रांसक्रिप्शन इनपुट बॉक्स में भर जाता है (या सीधे सबमिट होता है)। STT इंजन: ब्राउज़र का Web Speech (अंतरिम परिणामों सहित), FunASR HTTP सर्वर या स्थानीय `whisper.cpp`।
-- **बोलते ही रुकावट** — बोलना शुरू करते ही चल रहा प्लेबैक रुक जाता है (client→host, `talk` Remote नेमस्पेस पर)।
-- **इवेंट घोषणाएँ** — टर्न पूरा होना, लंबित स्वीकृतियाँ (waterfall-सुरक्षित: गेट कभी ब्लॉक नहीं करता) और त्रुटियाँ, म्यूट स्विच व कॉन्फ़िगर करने योग्य वाक्यों सहित।
-- **सेटिंग्स टैब** — इंजन/भाषा चयन और घोषणा स्विच, append-only प्रोफ़ाइल-पैच ऑपरेशन के रूप में सहेजे जाते हैं (बैकअप सहित)।
+- **`speak` टूल** - एजेंट अपने उत्तर ज़ोर से पढ़ता है। TTS इंजन: ब्राउज़र वॉइस, `edge-tts` (नेटवर्क न्यूरल वॉइस) या `piper` (स्थानीय)। ऑडियो ब्राउज़र में बजता है; जो host इसे वहन कर सकते हैं वहाँ सत्र लॉग सैनिटाइज़ की गई बात दर्ज करता है (सुरक्षा सीमाएँ देखें)।
+- **कंपोज़र माइक बटन** - दबाएँ, बोलें और ट्रांसक्रिप्शन इनपुट बॉक्स में भर जाता है (या सीधे सबमिट होता है)। STT इंजन: ब्राउज़र का Web Speech (अंतरिम परिणामों सहित), FunASR HTTP सर्वर या स्थानीय `whisper.cpp`।
+- **बोलते ही रुकावट** - बोलना शुरू करते ही चल रहा प्लेबैक रुक जाता है (client→host, `talk` Remote नेमस्पेस पर)।
+- **इवेंट घोषणाएँ** - टर्न पूरा होना, लंबित स्वीकृतियाँ (waterfall-सुरक्षित: गेट कभी ब्लॉक नहीं करता) और त्रुटियाँ, म्यूट स्विच व कॉन्फ़िगर करने योग्य वाक्यों सहित।
+- **सेटिंग्स टैब** - इंजन/भाषा चयन और घोषणा स्विच, append-only प्रोफ़ाइल-पैच ऑपरेशन के रूप में सहेजे जाते हैं (बैकअप सहित)।
 
 ## त्वरित शुरुआत
 
@@ -90,12 +90,12 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 
 ## इंस्टॉल और अनइंस्टॉल
 
-- **git चैनल** (नवीनतम `main`): `dsh plugin --profile web add github:PerryLink/dsh-talk` — `prepare` स्क्रिप्ट केवल प्रोडक्शन निर्भरताओं से बिल्ड करती है।
+- **git चैनल** (नवीनतम `main`): `dsh plugin --profile web add github:PerryLink/dsh-talk` - `prepare` स्क्रिप्ट केवल प्रोडक्शन निर्भरताओं से बिल्ड करती है।
 - **npm चैनल** (प्रकाशित रिलीज़): `dsh plugin --profile web add dsh-talk`।
 - **tarball चैनल**: इस रेपो में `pnpm pack`, फिर `dsh plugin --profile web add ./dsh-talk-<version>.tgz`।
 - **अनइंस्टॉल**: `dsh plugin --profile web remove dsh-talk` (या प्रोफ़ाइल पैच से पंक्ति हटाएँ)।
 
-> यदि pnpm इस पैकेज के लिए `ERR_PNPM_IGNORED_BUILDS` दिखाता है (esbuild का हानिरहित प्लेटफ़ॉर्म-बाइनरी सत्यापन), तो अपने `pnpm-workspace.yaml` में `allowBuilds: { esbuild: true }` जोड़ें — `dsh` CLI सटीक स्निपेट प्रिंट करता है।
+> यदि pnpm इस पैकेज के लिए `ERR_PNPM_IGNORED_BUILDS` दिखाता है (esbuild का हानिरहित प्लेटफ़ॉर्म-बाइनरी सत्यापन), तो अपने `pnpm-workspace.yaml` में `allowBuilds: { esbuild: true }` जोड़ें - `dsh` CLI सटीक स्निपेट प्रिंट करता है।
 
 ## कॉन्फ़िगरेशन
 
@@ -128,7 +128,7 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 | `maxSpeakChars` | `20000` | speak टूल के टेक्स्ट की सीमा (1..100000) |
 | `maxAudioCacheBytes` | `8388608` | मेमोरी में सिंथेसाइज़्ड ऑडियो कैश सीमा (1 MiB..64 MiB) |
 
-`stt.silenceFinaliseMs` और `record.vad.silenceMs` अलग-अलग तंत्र हैं: पहला लगातार Web Speech पहचान में आवाज़ न मिलने पर ट्रांसक्रिप्ट को अंतिम रूप देता है; दूसरा ऊर्जा-आधारित डिटेक्टर है जो host ट्रांसक्रिप्शन वाले कैप्चर में बोले गए हर खंड को बंद करता है, और वह खंड ट्रांसक्रिप्शन के लिए भेजा जाता है। `record.autoSubmit` केवल Web Speech पर लागू होता है: host ट्रांसक्रिप्शन वाला कैप्चर टेक्स्ट खुद कभी नहीं भेजता; एक ट्रिगर वाक्यांश (host की heal स्टेप द्वारा जाँचा गया) हर प्रॉम्प्ट भेजता है, और कैप्चर रुकने पर बिना भेजा टेक्स्ट ड्राफ़्ट में रहता है। दोनों अलग पाइपलाइनों में चलते हैं और कोई साझा स्थिति नहीं रखते।
+`stt.silenceFinaliseMs` और `record.vad.silenceMs` अलग-अलग तंत्र हैं: पहला लगातार Web Speech पहचान में आवाज़ न मिलने पर ट्रांसक्रिप्ट को अंतिम रूप देता है; दूसरा ऊर्जा-आधारित डिटेक्टर है जो host ट्रांसक्रिप्शन वाले कैप्चर में बोले गए हर खंड को बंद करता है, और वह खंड ट्रांसक्रिप्शन के लिए भेजा जाता है। `record.autoSubmit` तय करता है कि दोनों माइक पथों पर अंतिम टेक्स्ट सबमिट हो या ड्राफ़्ट में लिखा जाए: Web Speech खत्म होने पर, और host ट्रांसक्रिप्शन वाला कैप्चर रुकने पर। ट्रिगर वाक्यांश केवल host ट्रांसक्रिप्शन पथ पर, ब्राउज़र में, जुड़े हुए साफ़ टेक्स्ट पर जाँचा जाता है (host केवल हर खंड को साफ़ करता है)। ट्रिगर से भेजा गया प्रॉम्प्ट `record.autoSubmit` की सेटिंग चाहे जो हो, हमेशा सबमिट होता है। जो टेक्स्ट अभी भेजा नहीं गया, वह कैप्चर रुकने पर ड्राफ़्ट में जाता है, या `record.autoSubmit` चालू हो तो सबमिट होता है। दोनों अलग पाइपलाइनों में चलते हैं और कोई साझा स्थिति नहीं रखते।
 
 ## टूल और सतहें
 
@@ -141,17 +141,17 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 
 ## अनुमतियाँ और डेटा
 
-- **अनुमतियाँ**: प्लगइन केवल बाइट-सीमित इन-मेमोरी ऑडियो कैश रखता है; माइक अनुमति ब्राउज़र-मध्यस्थ है। सेटिंग्स टैब केवल प्रोफ़ाइल में पैच खंड जोड़ता है (टाइमस्टैम्प बैकअप सहित) — फ़ाइल कभी दोबारा नहीं लिखता।
-- **डेटा**: ऑडियो कभी मॉडल संदर्भ या सत्र लॉग में नहीं जाता। जहाँ host का सत्र शब्दावली इसे स्वीकार करता है, `dsh-talk/speech` इवेंट उच्चारण id, इंजन, कारण, आकार, सैनिटाइज़ टेक्स्ट और लागू होने पर ब्राउज़र वॉइस, गति और पिच रखता है; एनवलप-रहित host पर यह इवेंट लिखा ही नहीं जाता। हर डिस्प्ले/लॉग सतह क्रेडेंशियल, JWT, bearer हेडर और अस्थायी पथों को रिडैक्ट करती है।
+- **अनुमतियाँ**: प्लगइन केवल बाइट-सीमित इन-मेमोरी ऑडियो कैश रखता है, और host ट्रांसक्रिप्शन कैप्चर रुकने पर (जब टेक्स्ट हो) तथा कैप्चर के दौरान सुने गए हर ट्रिगर वाक्यांश पर `~/.dsh/logs/dsh-talk/transcripts-YYYY-MM.jsonl` (मोड 600) में कच्चे ट्रांसक्रिप्ट की एक पंक्ति जोड़ता है; माइक अनुमति ब्राउज़र-मध्यस्थ है। सेटिंग्स टैब केवल प्रोफ़ाइल में पैच खंड जोड़ता है (टाइमस्टैम्प बैकअप सहित) - फ़ाइल कभी दोबारा नहीं लिखता।
+- **डेटा**: ऑडियो कभी मॉडल संदर्भ या सत्र लॉग में नहीं जाता। जहाँ host का सत्र शब्दावली इसे स्वीकार करता है, `dsh-talk/speech` इवेंट उच्चारण id, इंजन, कारण, आकार, सैनिटाइज़ टेक्स्ट और लागू होने पर ब्राउज़र वॉइस, गति और पिच रखता है; एनवलप-रहित host पर यह इवेंट लिखा ही नहीं जाता। डिस्प्ले सतहें और लॉग की हर पंक्ति क्रेडेंशियल, JWT, bearer हेडर और अस्थायी पथों को रिडैक्ट करती हैं, सिवाय ट्रांसक्रिप्ट ट्रेल के (देखें «अनुमतियाँ»): वह बोले गए शब्द बिना रिडैक्शन के रखता है, इसलिए ज़ोर से बोली गई हर बात, बोला गया क्रेडेंशियल भी, वहाँ टेक्स्ट के रूप में लिखा जाता है।
 - **नेटवर्क**: केवल आपके कॉन्फ़िगर किए इंजन से संपर्क होता है। `edge-tts` नेटवर्क सिंथेसिस करता है, FunASR अपने कॉन्फ़िगर किए एंडपॉइंट का उपयोग करता है, और Chrome का `webkitSpeechRecognition` ट्रांसक्रिप्शन के लिए माइक्रोफ़ोन ऑडियो Google के सर्वर पर भेजता है; ब्राउज़र का `speechSynthesis` playback स्थानीय रहता है।
 
 ## सुरक्षा सीमाएँ
 
-- **मॉडल-दृश्य ⟺ लॉग्ड** — मॉडल केवल speak टूल का कैननिकल मान और रेंडर टेक्स्ट देखता है। `dsh-talk/speech` इवेंट केवल तब जोड़ा जाता है जब host इसे वहन कर सके (होस्ट संगतता देखें); `tool/call` + `tool/result` इवेंट हमेशा पुनर्निर्माण योग्य निशान बने रहते हैं।
-- **स्वीकृति घोषणाएँ कभी ब्लॉक नहीं करतीं** — `approval/request` लिसनर हमेशा `next()` बुलाता है।
-- **सैनिटाइज़्ड आउटपुट** — क्रेडेंशियल और अस्थायी ऑडियो पथ लॉग या डिस्प्ले तक नहीं पहुँचते।
-- **होस्ट संगतता** — `dsh-talk/speech` इवेंट एक हाँ/नहीं गेट से जोड़ा जाता है। जिन host की ज्ञात-प्रकार शब्दावली इस इवेंट को कवर करती है वे इसे जोड़ते हैं और कॉल यह बताती है; बाकी हर host — `0.1.1-rc.2` तक की हर जारी लाइन, `0.1.2-alpha` लाइन, `0.1.2-rc.1`, और `0.1.6-alpha.2` भी, जिसका `Session.append` केवल surface intent स्टैम्प कर सकता है, `ignorable` एनवलप नहीं (वह फ़ील्ड केवल पठन संगतता के लिए रखा गया है) — कोई append नहीं पाते, इसलिए वहाँ स्पीच कभी सत्र लॉग को दूषित नहीं करती। यह छूट अब मौन नहीं है: host प्रति-सत्र जोड़े/छोड़े गए काउंटर रखता है और `talk/latest(sessionId)` उन्हें लौटाता है; क्लाइंट की सत्र-स्तरीय playback सूची खाली रहती है और speak टूल के परिणाम ही पुनर्निर्माण योग्य निशान हैं।
-- **Fail loud** — अमान्य इंजन, सीमा से बाहर मान और बिना आवश्यक मॉडल/एंडपॉइंट के इंजन माउंट पर असफल होते हैं।
+- **मॉडल-दृश्य ⟺ लॉग्ड** - मॉडल केवल speak टूल का कैननिकल मान और रेंडर टेक्स्ट देखता है। `dsh-talk/speech` इवेंट केवल तब जोड़ा जाता है जब host इसे वहन कर सके (होस्ट संगतता देखें); `tool/call` + `tool/result` इवेंट हमेशा पुनर्निर्माण योग्य निशान बने रहते हैं।
+- **स्वीकृति घोषणाएँ कभी ब्लॉक नहीं करतीं** - `approval/request` लिसनर हमेशा `next()` बुलाता है।
+- **सैनिटाइज़्ड आउटपुट** - क्रेडेंशियल और अस्थायी ऑडियो पथ लॉग या डिस्प्ले तक नहीं पहुँचते।
+- **होस्ट संगतता** - `dsh-talk/speech` इवेंट एक हाँ/नहीं गेट से जोड़ा जाता है। जिन host की ज्ञात-प्रकार शब्दावली इस इवेंट को कवर करती है वे इसे जोड़ते हैं और कॉल यह बताती है; बाकी हर host - `0.1.1-rc.2` तक की हर जारी लाइन, `0.1.2-alpha` लाइन, `0.1.2-rc.1`, और `0.1.6-alpha.2` भी, जिसका `Session.append` केवल surface intent स्टैम्प कर सकता है, `ignorable` एनवलप नहीं (वह फ़ील्ड केवल पठन संगतता के लिए रखा गया है) - कोई append नहीं पाते, इसलिए वहाँ स्पीच कभी सत्र लॉग को दूषित नहीं करती। यह छूट अब मौन नहीं है: host प्रति-सत्र जोड़े/छोड़े गए काउंटर रखता है और `talk/latest(sessionId)` उन्हें लौटाता है; क्लाइंट की सत्र-स्तरीय playback सूची खाली रहती है और speak टूल के परिणाम ही पुनर्निर्माण योग्य निशान हैं।
+- **Fail loud** - अमान्य इंजन, सीमा से बाहर मान और बिना आवश्यक मॉडल/एंडपॉइंट के इंजन माउंट पर असफल होते हैं।
 
 ## ज्ञात सीमाएँ
 
@@ -168,7 +168,7 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 pnpm install        # node ^22.19 || >=24
 pnpm run typecheck  # tsc: src + tests स्थानीय हार्नेस चेकआउट के विरुद्ध
 pnpm run typecheck:ci  # tsc प्रकाशित 0.1.7-alpha.2 प्रकारों के विरुद्ध (बिना paths)
-pnpm test           # vitest: 86 टेस्ट, 15 सुइट
+pnpm test           # vitest: 449 टेस्ट, 32 फ़ाइलें
 pnpm run build      # tsc घोषणाएँ + tsdown बंडल (lib/)
 pnpm run verify:self-contained  # निर्भरता स्पेक registry से हल होती हैं
 pnpm run verify:artifacts       # निर्मित ESM फ़ेस + क्लाइंट ModuleLoader हैंडशेक
@@ -188,7 +188,7 @@ pnpm pack           # प्रकाशित tarball
 - **कोई patch-लेयर टकराव नहीं।** बंडल patch केवल अपनी पंक्ति `insert` करता है; कभी किसी अंतर्निहित पंक्ति का `config` ओवरराइड नहीं करता।
 - **कोई वैश्विक परिवर्तन नहीं।** यह प्रोटोटाइप नहीं बदलता, `process.env` नहीं लिखता, और वैश्विक fetch dispatcher प्रतिस्थापित नहीं करता।
 
-**साझा ईवेंट लिसनर रचना से ही अहस्तक्षेपी हैं।** यह क्रम-संवेदनशील ईवेंट `approval/request` को `ctx.on()` से देखता है — Cordis का **ब्रॉडकास्ट** पंजीकरण, जहाँ हर लिसनर चलता है और कोई किसी दूसरे को वंचित नहीं कर सकता। **यहाँ प्रत्येक लिसनर `next()` से डेलिगेट करता है**, इसलिए श्रृंखला कभी शॉर्ट-सर्किट नहीं होती:
+**साझा ईवेंट लिसनर रचना से ही अहस्तक्षेपी हैं।** यह क्रम-संवेदनशील ईवेंट `approval/request` को `ctx.on()` से देखता है - Cordis का **ब्रॉडकास्ट** पंजीकरण, जहाँ हर लिसनर चलता है और कोई किसी दूसरे को वंचित नहीं कर सकता। **यहाँ प्रत्येक लिसनर `next()` से डेलिगेट करता है**, इसलिए श्रृंखला कभी शॉर्ट-सर्किट नहीं होती:
 
 स्थैतिक प्रमाण: इस रिपॉज़िटरी पर `dsh-plugin-doctor` के K10–K13 सभी `pass` हैं।
 
@@ -198,28 +198,28 @@ pnpm pack           # प्रकाशित tarball
 
 ## Contributors
 
-- [@PerryLink](https://github.com/PerryLink) — निर्माता और मेंटेनर: वॉइस पाइपलाइन, स्पीच इंजन, माइक रिकॉर्डर, इवेंट घोषणाएँ, प्रोजेक्शन यूनिट और पाँच-भाषा दस्तावेज़।
+- [@PerryLink](https://github.com/PerryLink) - निर्माता और मेंटेनर: वॉइस पाइपलाइन, स्पीच इंजन, माइक रिकॉर्डर, इवेंट घोषणाएँ, प्रोजेक्शन यूनिट और पाँच-भाषा दस्तावेज़।
 
 ## PerryLink DSH Plugin Family
 
-यह प्रोजेक्ट [PerryLink](https://github.com/PerryLink) के DeepSeek Harness प्लगइन परिवार का हिस्सा है — **33 सक्रिय रूप से अनुरक्षित**, कुल सूची **42** है जिसमें **6 फ़्रोज़न** और **3 सेवानिवृत्त** हैं; हर एक की पंक्ति नीचे बनी रहती है, कारण “स्थिति” कॉलम में है। अगर यह उपयोगी लगे, तो अन्य भी मददगार होंगे:
+यह प्रोजेक्ट [PerryLink](https://github.com/PerryLink) के DeepSeek Harness प्लगइन परिवार का हिस्सा है - **33 सक्रिय रूप से अनुरक्षित**, कुल सूची **42** है जिसमें **6 फ़्रोज़न** और **3 सेवानिवृत्त** हैं; हर एक की पंक्ति नीचे बनी रहती है, कारण “स्थिति” कॉलम में है। अगर यह उपयोगी लगे, तो अन्य भी मददगार होंगे:
 
 | Plugin | एक पंक्ति में | स्थिति |
 |---|---|---|
 | **[dsh-auto-review](https://github.com/PerryLink/dsh-auto-review)** | Second-model auto-review on the approval chain, fail-closed by default | |
 | **[dsh-autotier](https://github.com/PerryLink/dsh-autotier)** | Automatic strong/cheap model-tier routing with deterministic risk guards and a `/tier` command | |
-| **[dsh-background-agents](https://github.com/PerryLink/dsh-background-agents)** | Durable background child agents with a Web UI sidebar, messaging and interrupt | 🚫 **सेवानिवृत्त** — ऊपर देखें |
-| **[dsh-budget](https://github.com/PerryLink/dsh-budget)** | Cost governance for DeepSeek Harness: budgets, carbon, and latency in one panel. | 🧊 फ़्रोज़न — रिपॉज़िटरी README देखें |
+| **[dsh-background-agents](https://github.com/PerryLink/dsh-background-agents)** | Durable background child agents with a Web UI sidebar, messaging and interrupt | 🚫 **सेवानिवृत्त** - ऊपर देखें |
+| **[dsh-budget](https://github.com/PerryLink/dsh-budget)** | Cost governance for DeepSeek Harness: budgets, carbon, and latency in one panel. | 🧊 फ़्रोज़न - रिपॉज़िटरी README देखें |
 | **[dsh-catalog](https://github.com/PerryLink/dsh-catalog)** | DSH Desktop Market standard catalog source for the PerryLink family | |
 | **[dsh-cert-mcp](https://github.com/PerryLink/dsh-cert-mcp)** | Read-only MCP server exposing the certification registry: grades, snapshots and five-dimension evidence | |
 | **[dsh-checkpoint-rewind](https://github.com/PerryLink/dsh-checkpoint-rewind)** | Claude Code /rewind-equivalent: snapshots, session forks, one-shot restore | |
-| **[dsh-claude-move](https://github.com/PerryLink/dsh-claude-move)** | Migrate Claude Code sessions, memory, skills and CLAUDE.md into DSH | 🧊 फ़्रोज़न — रिपॉज़िटरी README देखें |
-| **[dsh-click](https://github.com/PerryLink/dsh-click)** | Cross-platform native desktop control for DeepSeek Harness — Windows first. | |
+| **[dsh-claude-move](https://github.com/PerryLink/dsh-claude-move)** | Migrate Claude Code sessions, memory, skills and CLAUDE.md into DSH | 🧊 फ़्रोज़न - रिपॉज़िटरी README देखें |
+| **[dsh-click](https://github.com/PerryLink/dsh-click)** | Cross-platform native desktop control for DeepSeek Harness - Windows first. | |
 | **[dsh-composer-history](https://github.com/PerryLink/dsh-composer-history)** | Terminal-style input history for the web composer: arrows, Ctrl+R search | |
 | **[dsh-data-quality](https://github.com/PerryLink/dsh-data-quality)** | Dataset quality checks and citation cross-checks (the optional numeric bridge consumed here) | |
-| **[dsh-defend](https://github.com/PerryLink/dsh-defend)** | Prompt-injection, jailbreak, and secret-leak defense for DeepSeek Harness. | 🧊 फ़्रोज़न — रिपॉज़िटरी README देखें |
+| **[dsh-defend](https://github.com/PerryLink/dsh-defend)** | Prompt-injection, jailbreak, and secret-leak defense for DeepSeek Harness. | 🧊 फ़्रोज़न - रिपॉज़िटरी README देखें |
 | **[dsh-doublecheck](https://github.com/PerryLink/dsh-doublecheck)** | Engineering-discipline guard: requirements grill, test gates, adversary review | |
-| **[dsh-draw](https://github.com/PerryLink/dsh-draw)** | Unified static-image generation routing for DeepSeek Harness. | 🧊 फ़्रोज़न — रिपॉज़िटरी README देखें |
+| **[dsh-draw](https://github.com/PerryLink/dsh-draw)** | Unified static-image generation routing for DeepSeek Harness. | 🧊 फ़्रोज़न - रिपॉज़िटरी README देखें |
 | **[dsh-fast](https://github.com/PerryLink/dsh-fast)** | Read-only performance diagnostics for DeepSeek Harness. | |
 | **[dsh-fund-research](https://github.com/PerryLink/dsh-fund-research)** | Deterministic research reports for Chinese public mutual funds | |
 | **[dsh-github](https://github.com/PerryLink/dsh-github)** | GitHub PR/issues integration for DSH, every write gated by approval | |
@@ -230,7 +230,7 @@ pnpm pack           # प्रकाशित tarball
 | **[dsh-lsp-actions](https://github.com/PerryLink/dsh-lsp-actions)** | LSP diagnostics, formatting, completion, code actions and rename over language servers | |
 | **[dsh-mask](https://github.com/PerryLink/dsh-mask)** | PII masking middleware: anonymize at the model boundary, restore at the display layer | |
 | **[dsh-mcp-panel](https://github.com/PerryLink/dsh-mcp-panel)** | Read-only MCP runtime panel: /mcp command + Settings tab with status, tools and errors | |
-| **[dsh-memento](https://github.com/PerryLink/dsh-memento)** | Approval-gated cross-session memory: ctx.memory seam + SQLite + memory tool | 🧊 फ़्रोज़न — रिपॉज़िटरी README देखें |
+| **[dsh-memento](https://github.com/PerryLink/dsh-memento)** | Approval-gated cross-session memory: ctx.memory seam + SQLite + memory tool | 🧊 फ़्रोज़न - रिपॉज़िटरी README देखें |
 | **[dsh-observe](https://github.com/PerryLink/dsh-observe)** | OpenTelemetry and Langfuse observability exporter for DeepSeek Harness. | |
 | **[dsh-output-styles](https://github.com/PerryLink/dsh-output-styles)** | Claude Code outputStyles-equivalent runtime style switching | |
 | **[dsh-permission-rules](https://github.com/PerryLink/dsh-permission-rules)** | Claude Code-style declarative allow/deny/ask permission rules with audit | |
@@ -239,15 +239,15 @@ pnpm pack           # प्रकाशित tarball
 | **[dsh-plugin-guide](https://github.com/PerryLink/dsh-plugin-guide)** | Plugin-development knowledge base as an on-demand agent skill | |
 | **[dsh-plugin-kit](https://github.com/PerryLink/dsh-plugin-kit)** | Shared zero-runtime-dependency toolkit for the PerryLink DSH plugins | |
 | **[dsh-plugin-upgrade](https://github.com/PerryLink/dsh-plugin-upgrade)** | One-package, one-corridor-index plugin upgrade skill: routes a repository to the matching closed corridor card | |
-| **[dsh-plugin-upgrade-015](https://github.com/PerryLink/dsh-plugin-upgrade-015)** | Merged `0.1.3-alpha.1` → `0.1.5-rc.1` upgrade corridor card plus a zero-dependency seam scanner | 🚫 सेवानिवृत्त — कॉरिडोर अब `dsh-plugin-upgrade` द्वारा |
-| **[dsh-reach](https://github.com/PerryLink/dsh-reach)** | Multi-channel approval/question bridge: WeChat/Telegram/Feishu, session console | 🧊 फ़्रोज़न — रिपॉज़िटरी README देखें |
+| **[dsh-plugin-upgrade-015](https://github.com/PerryLink/dsh-plugin-upgrade-015)** | Merged `0.1.3-alpha.1` → `0.1.5-rc.1` upgrade corridor card plus a zero-dependency seam scanner | 🚫 सेवानिवृत्त - कॉरिडोर अब `dsh-plugin-upgrade` द्वारा |
+| **[dsh-reach](https://github.com/PerryLink/dsh-reach)** | Multi-channel approval/question bridge: WeChat/Telegram/Feishu, session console | 🧊 फ़्रोज़न - रिपॉज़िटरी README देखें |
 | **[dsh-research-report](https://github.com/PerryLink/dsh-research-report)** | Verifiable research-report engine: content-addressed evidence ledger and sealed versions | |
 | **[dsh-score](https://github.com/PerryLink/dsh-score)** | Multi-dimensional quality scoring for DeepSeek Harness plugins. | |
-| **[dsh-session-pin](https://github.com/PerryLink/dsh-session-pin)** | Pin sessions in the Web sidebar with durable ordering | 🚫 **सेवानिवृत्त** — ऊपर देखें |
-| **[dsh-session-sync](https://github.com/PerryLink/dsh-session-sync)** | Cross-device session sync for DeepSeek Harness — a dedicated git mirror of your session store. | |
+| **[dsh-session-pin](https://github.com/PerryLink/dsh-session-pin)** | Pin sessions in the Web sidebar with durable ordering | 🚫 **सेवानिवृत्त** - ऊपर देखें |
+| **[dsh-session-sync](https://github.com/PerryLink/dsh-session-sync)** | Cross-device session sync for DeepSeek Harness - a dedicated git mirror of your session store. | |
 | **[dsh-skill-pack-security](https://github.com/PerryLink/dsh-skill-pack-security)** | Security-audit skill pack: secret scan, dependency and supply-chain review | |
 | **[dsh-talk](https://github.com/PerryLink/dsh-talk)** | Voice-first session loop for DeepSeek Harness: talk to it, hear it answer. | |
-| **[dsh-team-rooms](https://github.com/PerryLink/dsh-team-rooms)** | Cross-session team rooms: shared message bus, task board and timeline | 🚫 **सेवानिवृत्त** — ऊपर देखें |
+| **[dsh-team-rooms](https://github.com/PerryLink/dsh-team-rooms)** | Cross-session team rooms: shared message bus, task board and timeline | 🚫 **सेवानिवृत्त** - ऊपर देखें |
 | **[dsh-test-drive](https://github.com/PerryLink/dsh-test-drive)** | Isolated install-and-smoke test drives for DeepSeek Harness plugins. | |
 | **[dsh-ticktick](https://github.com/PerryLink/dsh-ticktick)** | TickTick/Dida365 task bridge: session-header panel + 11 tools | |
 | **[dsh-translate](https://github.com/PerryLink/dsh-translate)** | Vendor parameter translation and deterministic JSON repair for DeepSeek Harness. | |

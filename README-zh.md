@@ -5,7 +5,7 @@
 
 **DeepSeek Harness 的 voice-first 会话闭环：对它说话，听它回答。**
 
-*按下麦克风说话，回复会被朗读出来——说话即打断。*
+*按下麦克风说话，回复会被朗读出来：说话即打断。*
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Gitee](https://img.shields.io/badge/Gitee-mirror-c71d23?logo=gitee)](https://gitee.com/perrylink/dsh-talk)
@@ -31,17 +31,17 @@
 <!-- star-cta -->
 ## ⭐ 如果它帮到了你
 
-这个插件是 [DSH 插件家族](https://github.com/PerryLink)的一员（40+ 个，全部 Apache-2.0）。如果你在用，**给个 star** —— 它不会解锁任何功能，但会让下一个人在搜索里更容易找到它。
+这个插件是 [DSH 插件家族](https://github.com/PerryLink)的一员（40+ 个，全部 Apache-2.0）。如果你在用，**给个 star**：它不会解锁任何功能，但会让下一个人在搜索里更容易找到它。
 
-*English:* part of a 40+ plugin family for DeepSeek Harness. If it is useful, **a star helps the next person find it** — nothing is gated behind it.
+*English:* part of a 40+ plugin family for DeepSeek Harness. If it is useful, **a star helps the next person find it** - nothing is gated behind it.
 
 ## What is dsh-talk?
 
 DeepSeek Harness 的 voice-first 会话闭环：对它说话，听它回答。
 
-按下麦克风说话，回复会被朗读出来——说话即打断。
+按下麦克风说话，回复会被朗读出来：说话即打断。
 
-![dsh-talk 终端演示：dsh-talk — install, verify the row, then talk to the session](https://raw.githubusercontent.com/PerryLink/dsh-talk/main/docs/assets/dsh-talk-demo.png)
+![dsh-talk 终端演示：dsh-talk - install, verify the row, then talk to the session](https://raw.githubusercontent.com/PerryLink/dsh-talk/main/docs/assets/dsh-talk-demo.png)
 
 ![Animated terminal demo of dsh-talk](https://raw.githubusercontent.com/PerryLink/dsh-talk/main/docs/assets/dsh-talk-demo.gif)
 
@@ -59,11 +59,11 @@ DeepSeek Harness 的 voice-first 会话闭环：对它说话，听它回答。
 
 `dsh-talk` 双向闭合语音环路：
 
-- **`speak` 工具** —— agent 朗读自己的回复。TTS 引擎：浏览器语音、`edge-tts`（网络神经语音）或 `piper`（本地）。音频在浏览器播放；在能够承载该事件的宿主上，会话日志记录脱敏后的朗读内容（见安全边界）。
-- **输入框麦克风按钮** —— 按下说话，转写文本自动回填输入框（或直接提交）。STT 引擎：浏览器 Web Speech（含中间结果）、FunASR HTTP 服务或本地 `whisper.cpp`。
-- **说话即打断** —— 开始说话即停止当前播报（经 client→host 的 `talk` Remote 通道）。
-- **事件播报** —— 回合完成、待审批（waterfall 安全：绝不阻塞门禁）与出错，带静音开关与可配话术。
-- **设置页签** —— 引擎/语言选择与播报开关，以追加式 profile patch 操作保存（带备份）。
+- **`speak` 工具**：agent 朗读自己的回复。TTS 引擎：浏览器语音、`edge-tts`（网络神经语音）或 `piper`（本地）。音频在浏览器播放；在能够承载该事件的宿主上，会话日志记录脱敏后的朗读内容（见安全边界）。
+- **输入框麦克风按钮**：按下说话，转写文本自动回填输入框（或直接提交）。STT 引擎：浏览器 Web Speech（含中间结果）、FunASR HTTP 服务或本地 `whisper.cpp`。
+- **说话即打断**：开始说话即停止当前播报（经 client→host 的 `talk` Remote 通道）。
+- **事件播报**：回合完成、待审批（waterfall 安全：绝不阻塞门禁）与出错，带静音开关与可配话术。
+- **设置页签**：引擎/语言选择与播报开关，以追加式 profile patch 操作保存（带备份）。
 
 ```text
 浏览器                                 宿主
@@ -99,12 +99,12 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 
 ## 安装与卸载
 
-- **git 通道**（最新 `main`）：`dsh plugin --profile web add github:PerryLink/dsh-talk` —— `prepare` 脚本仅用生产依赖构建。
+- **git 通道**（最新 `main`）：`dsh plugin --profile web add github:PerryLink/dsh-talk`：`prepare` 脚本仅用生产依赖构建。
 - **npm 通道**（正式发布版）：`dsh plugin --profile web add dsh-talk`。
 - **tarball 通道**：在本仓库执行 `pnpm pack`，然后 `dsh plugin --profile web add ./dsh-talk-<version>.tgz`。
 - **卸载**：`dsh plugin --profile web remove dsh-talk`（或从 profile patch 中删除该行）。
 
-> 如果 pnpm 对本包报 `ERR_PNPM_IGNORED_BUILDS`（esbuild 的平台二进制无害校验），在你的 `pnpm-workspace.yaml` 中加入 `allowBuilds: { esbuild: true }` —— `dsh` CLI 会打印确切片段。
+> 如果 pnpm 对本包报 `ERR_PNPM_IGNORED_BUILDS`（esbuild 的平台二进制无害校验），在你的 `pnpm-workspace.yaml` 中加入 `allowBuilds: { esbuild: true }`：`dsh` CLI 会打印确切片段。
 
 ## 配置
 
@@ -137,7 +137,7 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 | `maxSpeakChars` | `20000` | speak 工具文本上限（1..100000） |
 | `maxAudioCacheBytes` | `8388608` | 内存合成音频缓存上限（1 MiB..64 MiB） |
 
-`stt.silenceFinaliseMs` 与 `record.vad.silenceMs` 是两套独立机制：前者在连续 Web Speech 识别听不到语音时定稿转写文本；后者是能量检测器，在宿主转写采集中结束每个语音段，该段随即送去转写。`record.autoSubmit` 仅作用于 Web Speech：宿主转写采集从不自行提交文本，由触发短语（经宿主的 heal 步骤判定）发送每条提示，停止采集时未发送的文本留在草稿中。两者处于不同流水线，不共享任何状态。
+`stt.silenceFinaliseMs` 与 `record.vad.silenceMs` 是两套独立机制：前者在连续 Web Speech 识别听不到语音时定稿转写文本；后者是能量检测器，在宿主转写采集中结束每个语音段，该段随即送去转写。`record.autoSubmit` 在两条麦克风路径上都决定定稿文本是提交还是写入草稿：Web Speech 结束时，以及宿主转写采集停止时。触发短语只在宿主转写路径上生效，由浏览器对拼接后的清理文本进行判定（宿主只负责清理每个段落）。触发短语发出的提示总是直接提交，与 `record.autoSubmit` 的设置无关。尚未发送的文本在采集停止时写入草稿，若 `record.autoSubmit` 已开启则直接提交。两者处于不同流水线，不共享任何状态。
 
 ## 工具与界面
 
@@ -150,17 +150,17 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 
 ## 权限与数据
 
-- **权限**：插件只保存内存中、字节受限的音频缓存；麦克风权限由浏览器管理。设置页签只向 profile 追加 patch 片段（带时间戳备份）——绝不重写文件。
-- **数据**：音频绝不进入模型上下文或会话日志。在宿主的会话词汇表接受该事件的宿主上，`dsh-talk/speech` 事件携带朗读 id、引擎、原因、大小、脱敏文本，并在适用时携带浏览器语音、语速和音高；在无信封宿主上该事件完全不写入。所有展示/日志面都会脱敏凭据、JWT、bearer 头与临时路径。
+- **权限**：插件只保存内存中、字节受限的音频缓存，并在每次宿主转写采集停止（且有文字时），以及采集中每个触发短语出现时，向 `~/.dsh/logs/dsh-talk/transcripts-YYYY-MM.jsonl`（模式 600）追加一行原始转写文本；麦克风权限由浏览器管理。设置页签只向 profile 追加 patch 片段（带时间戳备份）：绝不重写文件。
+- **数据**：音频绝不进入模型上下文或会话日志。在宿主的会话词汇表接受该事件的宿主上，`dsh-talk/speech` 事件携带朗读 id、引擎、原因、大小、脱敏文本，并在适用时携带浏览器语音、语速和音高；在无信封宿主上该事件完全不写入。展示面与日志行都会脱敏凭据、JWT、bearer 头与临时路径，唯独转写追踪文件（见上方「权限」）例外：它保存未脱敏的原始口语文本，因此口述的凭据也会以文本形式写入其中。
 - **网络**：只联系你配置的引擎。`edge-tts` 执行网络合成，FunASR 使用其配置的端点，而 Chrome 的 `webkitSpeechRecognition` 会将麦克风音频发送到 Google 服务器进行转写；浏览器的 `speechSynthesis` 播放仍在本机完成。
 
 ## 安全边界
 
-- **模型可见 ⟺ 已记录** —— 模型只看到 speak 工具的规范值与渲染文本。`dsh-talk/speech` 事件只在宿主能够承载它时写入（见宿主兼容性）；`tool/call` + `tool/result` 事件始终是可重建的痕迹。
-- **审批播报绝不阻塞** —— `approval/request` 监听器总是调用 `next()`。
-- **输出脱敏** —— 凭据与临时音频路径绝不上日志或展示面。
-- **宿主兼容性** —— `dsh-talk/speech` 事件经「是/否」门写入：已知词汇表覆盖该事件的宿主直接追加，且调用方可知追加已发生；其余宿主——截至 `0.1.1-rc.2` 的全部已发布线、`0.1.2-alpha` 线、`0.1.2-rc.1`，以及 `0.1.6-alpha.2`（其 `Session.append` 只能盖章 surface intent，无法盖章 `ignorable` 信封，该字段仅保留用于存量日志读取兼容）——完全不追加，因此语音在这些宿主线上永远不会污染会话日志。跳过不再无声：宿主按会话保留「已追加/已跳过」计数，可由 `talk/latest(sessionId)` 读回；客户端会话级播放列表保持为空，speak 工具结果仍是可重建的审计痕迹。
-- **失败响亮** —— 非法引擎、越界数值、缺模型/端点的引擎配置在挂载时即报错。
+- **模型可见 ⟺ 已记录**：模型只看到 speak 工具的规范值与渲染文本。`dsh-talk/speech` 事件只在宿主能够承载它时写入（见宿主兼容性）；`tool/call` + `tool/result` 事件始终是可重建的痕迹。
+- **审批播报绝不阻塞**：`approval/request` 监听器总是调用 `next()`。
+- **输出脱敏**：凭据与临时音频路径绝不上日志或展示面。
+- **宿主兼容性**：`dsh-talk/speech` 事件经「是/否」门写入：已知词汇表覆盖该事件的宿主直接追加，且调用方可知追加已发生；其余宿主：截至 `0.1.1-rc.2` 的全部已发布线、`0.1.2-alpha` 线、`0.1.2-rc.1`，以及 `0.1.6-alpha.2`（其 `Session.append` 只能盖章 surface intent，无法盖章 `ignorable` 信封，该字段仅保留用于存量日志读取兼容）：完全不追加，因此语音在这些宿主线上永远不会污染会话日志。跳过不再无声：宿主按会话保留「已追加/已跳过」计数，可由 `talk/latest(sessionId)` 读回；客户端会话级播放列表保持为空，speak 工具结果仍是可重建的审计痕迹。
+- **失败响亮**：非法引擎、越界数值、缺模型/端点的引擎配置在挂载时即报错。
 
 ## 已知限制
 
@@ -177,7 +177,7 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 pnpm install        # node ^22.19 || >=24
 pnpm run typecheck  # tsc：src + tests，对照本地 harness checkout
 pnpm run typecheck:ci  # tsc：对照已发布的 0.1.7-alpha.2 类型（无 paths）
-pnpm test           # vitest：86 个测试、15 个套件
+pnpm test           # vitest：449 个测试、32 个文件
 pnpm run build      # tsc 声明 + tsdown bundle（lib/）
 pnpm run verify:self-contained  # 依赖声明全部来自 registry
 pnpm run verify:artifacts       # 构建产物 ESM 面 + client ModuleLoader 握手
@@ -197,7 +197,7 @@ pnpm pack           # 发布用 tarball
 - **无 patch 层冲突。** 组合包 patch 只 `insert` 自己那一行，从不覆写内置行的 `config`。
 - **无全局改写。** 不改原型、不改写 `process.env`、不替换全局 fetch dispatcher。
 
-**共享事件监听器在构造上就不互相干扰。** 它用 `ctx.on()` 监听顺序敏感事件 `approval/request` —— Cordis 的**广播**语义：每个监听器都会运行，任何一个都无法饿死其他监听器。**此处每个监听器都通过 `next()` 委托**，因此链条绝不会被短路；改写作用在 `next()` 产出的值上，而不是用它顶替返回：
+**共享事件监听器在构造上就不互相干扰。** 它用 `ctx.on()` 监听顺序敏感事件 `approval/request`，即 Cordis 的**广播**语义：每个监听器都会运行，任何一个都无法饿死其他监听器。**此处每个监听器都通过 `next()` 委托**，因此链条绝不会被短路；改写作用在 `next()` 产出的值上，而不是用它顶替返回：
 
 静态证据：`dsh-plugin-doctor` 的 K10–K13 在本仓全部为 `pass`。
 
@@ -207,28 +207,28 @@ pnpm pack           # 发布用 tarball
 
 ## Contributors
 
-- [@PerryLink](https://github.com/PerryLink) —— 创建者与维护者：朗读管线、语音引擎、麦克风录音、事件播报、投影单元与五语文档。
+- [@PerryLink](https://github.com/PerryLink)：创建者与维护者：朗读管线、语音引擎、麦克风录音、事件播报、投影单元与五语文档。
 
 ## PerryLink DSH Plugin Family
 
-本项目是 [PerryLink](https://github.com/PerryLink) 维护的 DeepSeek Harness 插件家族成员：**33 个活跃维护**，名册共 **42** 个，其中 **6 个已冻结**、**3 个已退役**——每一个都在下表保留自己的行，原因见「状态」列。如果它能帮到你，其他的也会：
+本项目是 [PerryLink](https://github.com/PerryLink) 维护的 DeepSeek Harness 插件家族成员：**33 个活跃维护**，名册共 **42** 个，其中 **6 个已冻结**、**3 个已退役**：每一个都在下表保留自己的行，原因见「状态」列。如果它能帮到你，其他的也会：
 
 | Plugin | 一句话 | 状态 |
 |---|---|---|
 | **[dsh-auto-review](https://github.com/PerryLink/dsh-auto-review)** | Second-model auto-review on the approval chain, fail-closed by default | |
 | **[dsh-autotier](https://github.com/PerryLink/dsh-autotier)** | Automatic strong/cheap model-tier routing with deterministic risk guards and a `/tier` command | |
-| **[dsh-background-agents](https://github.com/PerryLink/dsh-background-agents)** | Durable background child agents with a Web UI sidebar, messaging and interrupt | 🚫 **已退役** — 见上方说明 |
-| **[dsh-budget](https://github.com/PerryLink/dsh-budget)** | Cost governance for DeepSeek Harness: budgets, carbon, and latency in one panel. | 🧊 已冻结 — 见仓库 README |
+| **[dsh-background-agents](https://github.com/PerryLink/dsh-background-agents)** | Durable background child agents with a Web UI sidebar, messaging and interrupt | 🚫 **已退役**：见上方说明 |
+| **[dsh-budget](https://github.com/PerryLink/dsh-budget)** | Cost governance for DeepSeek Harness: budgets, carbon, and latency in one panel. | 🧊 已冻结：见仓库 README |
 | **[dsh-catalog](https://github.com/PerryLink/dsh-catalog)** | DSH Desktop Market standard catalog source for the PerryLink family | |
 | **[dsh-cert-mcp](https://github.com/PerryLink/dsh-cert-mcp)** | Read-only MCP server exposing the certification registry: grades, snapshots and five-dimension evidence | |
 | **[dsh-checkpoint-rewind](https://github.com/PerryLink/dsh-checkpoint-rewind)** | Claude Code /rewind-equivalent: snapshots, session forks, one-shot restore | |
-| **[dsh-claude-move](https://github.com/PerryLink/dsh-claude-move)** | Migrate Claude Code sessions, memory, skills and CLAUDE.md into DSH | 🧊 已冻结 — 见仓库 README |
-| **[dsh-click](https://github.com/PerryLink/dsh-click)** | Cross-platform native desktop control for DeepSeek Harness — Windows first. | |
+| **[dsh-claude-move](https://github.com/PerryLink/dsh-claude-move)** | Migrate Claude Code sessions, memory, skills and CLAUDE.md into DSH | 🧊 已冻结：见仓库 README |
+| **[dsh-click](https://github.com/PerryLink/dsh-click)** | Cross-platform native desktop control for DeepSeek Harness - Windows first. | |
 | **[dsh-composer-history](https://github.com/PerryLink/dsh-composer-history)** | Terminal-style input history for the web composer: arrows, Ctrl+R search | |
 | **[dsh-data-quality](https://github.com/PerryLink/dsh-data-quality)** | Dataset quality checks and citation cross-checks (the optional numeric bridge consumed here) | |
-| **[dsh-defend](https://github.com/PerryLink/dsh-defend)** | Prompt-injection, jailbreak, and secret-leak defense for DeepSeek Harness. | 🧊 已冻结 — 见仓库 README |
+| **[dsh-defend](https://github.com/PerryLink/dsh-defend)** | Prompt-injection, jailbreak, and secret-leak defense for DeepSeek Harness. | 🧊 已冻结：见仓库 README |
 | **[dsh-doublecheck](https://github.com/PerryLink/dsh-doublecheck)** | Engineering-discipline guard: requirements grill, test gates, adversary review | |
-| **[dsh-draw](https://github.com/PerryLink/dsh-draw)** | Unified static-image generation routing for DeepSeek Harness. | 🧊 已冻结 — 见仓库 README |
+| **[dsh-draw](https://github.com/PerryLink/dsh-draw)** | Unified static-image generation routing for DeepSeek Harness. | 🧊 已冻结：见仓库 README |
 | **[dsh-fast](https://github.com/PerryLink/dsh-fast)** | Read-only performance diagnostics for DeepSeek Harness. | |
 | **[dsh-fund-research](https://github.com/PerryLink/dsh-fund-research)** | Deterministic research reports for Chinese public mutual funds | |
 | **[dsh-github](https://github.com/PerryLink/dsh-github)** | GitHub PR/issues integration for DSH, every write gated by approval | |
@@ -239,7 +239,7 @@ pnpm pack           # 发布用 tarball
 | **[dsh-lsp-actions](https://github.com/PerryLink/dsh-lsp-actions)** | LSP diagnostics, formatting, completion, code actions and rename over language servers | |
 | **[dsh-mask](https://github.com/PerryLink/dsh-mask)** | PII masking middleware: anonymize at the model boundary, restore at the display layer | |
 | **[dsh-mcp-panel](https://github.com/PerryLink/dsh-mcp-panel)** | Read-only MCP runtime panel: /mcp command + Settings tab with status, tools and errors | |
-| **[dsh-memento](https://github.com/PerryLink/dsh-memento)** | Approval-gated cross-session memory: ctx.memory seam + SQLite + memory tool | 🧊 已冻结 — 见仓库 README |
+| **[dsh-memento](https://github.com/PerryLink/dsh-memento)** | Approval-gated cross-session memory: ctx.memory seam + SQLite + memory tool | 🧊 已冻结：见仓库 README |
 | **[dsh-observe](https://github.com/PerryLink/dsh-observe)** | OpenTelemetry and Langfuse observability exporter for DeepSeek Harness. | |
 | **[dsh-output-styles](https://github.com/PerryLink/dsh-output-styles)** | Claude Code outputStyles-equivalent runtime style switching | |
 | **[dsh-permission-rules](https://github.com/PerryLink/dsh-permission-rules)** | Claude Code-style declarative allow/deny/ask permission rules with audit | |
@@ -248,15 +248,15 @@ pnpm pack           # 发布用 tarball
 | **[dsh-plugin-guide](https://github.com/PerryLink/dsh-plugin-guide)** | Plugin-development knowledge base as an on-demand agent skill | |
 | **[dsh-plugin-kit](https://github.com/PerryLink/dsh-plugin-kit)** | Shared zero-runtime-dependency toolkit for the PerryLink DSH plugins | |
 | **[dsh-plugin-upgrade](https://github.com/PerryLink/dsh-plugin-upgrade)** | One-package, one-corridor-index plugin upgrade skill: routes a repository to the matching closed corridor card | |
-| **[dsh-plugin-upgrade-015](https://github.com/PerryLink/dsh-plugin-upgrade-015)** | Merged `0.1.3-alpha.1` → `0.1.5-rc.1` upgrade corridor card plus a zero-dependency seam scanner | 🚫 已退役 —— 走廊由 `dsh-plugin-upgrade` 承担 |
-| **[dsh-reach](https://github.com/PerryLink/dsh-reach)** | Multi-channel approval/question bridge: WeChat/Telegram/Feishu, session console | 🧊 已冻结 — 见仓库 README |
+| **[dsh-plugin-upgrade-015](https://github.com/PerryLink/dsh-plugin-upgrade-015)** | Merged `0.1.3-alpha.1` → `0.1.5-rc.1` upgrade corridor card plus a zero-dependency seam scanner | 🚫 已退役：走廊由 `dsh-plugin-upgrade` 承担 |
+| **[dsh-reach](https://github.com/PerryLink/dsh-reach)** | Multi-channel approval/question bridge: WeChat/Telegram/Feishu, session console | 🧊 已冻结：见仓库 README |
 | **[dsh-research-report](https://github.com/PerryLink/dsh-research-report)** | Verifiable research-report engine: content-addressed evidence ledger and sealed versions | |
 | **[dsh-score](https://github.com/PerryLink/dsh-score)** | Multi-dimensional quality scoring for DeepSeek Harness plugins. | |
-| **[dsh-session-pin](https://github.com/PerryLink/dsh-session-pin)** | Pin sessions in the Web sidebar with durable ordering | 🚫 **已退役** — 见上方说明 |
-| **[dsh-session-sync](https://github.com/PerryLink/dsh-session-sync)** | Cross-device session sync for DeepSeek Harness — a dedicated git mirror of your session store. | |
+| **[dsh-session-pin](https://github.com/PerryLink/dsh-session-pin)** | Pin sessions in the Web sidebar with durable ordering | 🚫 **已退役**：见上方说明 |
+| **[dsh-session-sync](https://github.com/PerryLink/dsh-session-sync)** | Cross-device session sync for DeepSeek Harness - a dedicated git mirror of your session store. | |
 | **[dsh-skill-pack-security](https://github.com/PerryLink/dsh-skill-pack-security)** | Security-audit skill pack: secret scan, dependency and supply-chain review | |
 | **[dsh-talk](https://github.com/PerryLink/dsh-talk)** | Voice-first session loop for DeepSeek Harness: talk to it, hear it answer. | |
-| **[dsh-team-rooms](https://github.com/PerryLink/dsh-team-rooms)** | Cross-session team rooms: shared message bus, task board and timeline | 🚫 **已退役** — 见上方说明 |
+| **[dsh-team-rooms](https://github.com/PerryLink/dsh-team-rooms)** | Cross-session team rooms: shared message bus, task board and timeline | 🚫 **已退役**：见上方说明 |
 | **[dsh-test-drive](https://github.com/PerryLink/dsh-test-drive)** | Isolated install-and-smoke test drives for DeepSeek Harness plugins. | |
 | **[dsh-ticktick](https://github.com/PerryLink/dsh-ticktick)** | TickTick/Dida365 task bridge: session-header panel + 11 tools | |
 | **[dsh-translate](https://github.com/PerryLink/dsh-translate)** | Vendor parameter translation and deterministic JSON repair for DeepSeek Harness. | |
