@@ -40,6 +40,7 @@ import {
   startSpeechPoll,
 } from './speechPoll.ts'
 import { encodeWav16kMono } from './wav.ts'
+import { triggerEnd, triggerPrompt } from '../trigger.ts'
 import type {
   TalkAudio,
   TalkHeal,
@@ -62,8 +63,11 @@ export interface TalkMicInjected {
   interrupt: () => Promise<TalkInterruptResult>
   /** Host transcription for the local STT engines. */
   transcribe: (audioData: string) => Promise<TalkTranscript>
-  /** Heal the accumulated raw transcript on the host; the host makes the one model call. */
-  heal: (rawTranscript: string) => Promise<TalkHeal>
+  /**
+   * Clean one segment's newest text on the host. `context` is the earlier raw words, which the
+   * model must not clean or return; the host makes the one model call.
+   */
+  heal: (context: string, text: string) => Promise<TalkHeal>
   /** Append one stop's raw and cleaned text to the host's transcript trail. */
   logTranscript: (entry: TalkTranscriptLogEntry) => Promise<TalkTranscriptLogResult>
   /** Serve one cached utterance's audio. */
@@ -210,6 +214,26 @@ interface CaptureGraph {
 }
 
 /**
+ * How many earlier raw words each cleanup call sees as context. The user asked for "maybe
+ * previous 30 words?"; this is the one place to change it. The model is told these words are
+ * earlier speech, so it neither cleans them nor returns them, and the window keeps every call
+ * the same size however long the capture runs.
+ */
+const HEAL_CONTEXT_WORDS = 30
+
+/**
+ * The context for the next segment: the last {@link HEAL_CONTEXT_WORDS} raw words said since the
+ * last trigger, joined with single spaces. Empty when no words came before.
+ *
+ * @param accumulated - the raw words of the current prompt, joined with single spaces.
+ * @returns the context words; the empty string when there are none.
+ */
+function contextWindow(accumulated: string): string {
+  const words = accumulated.split(/\s+/u).filter(word => word !== '')
+  return words.slice(-HEAL_CONTEXT_WORDS).join(' ')
+}
+
+/**
  * One segmented capture, from the press until its final text is placed. The microphone
  * stays open. The segmenter cuts speech segments out of the block stream, and each one is
  * transcribed in order.
@@ -221,16 +245,25 @@ interface SegmentedCapture {
   segmenter: Segmenter
   /** When the capture started (Date.now), for the elapsed display. */
   startedAt: number
-  /** The raw transcripts of every segment so far, joined with single spaces. */
+  /**
+   * The raw words of the current prompt, joined with single spaces, every segment included.
+   * The trail's `raw` is this text, and its last {@link HEAL_CONTEXT_WORDS} words are the context.
+   * Reset at each trigger that submits a prompt.
+   */
   accumulated: string
   /**
-   * The last heal answer: the accumulated text it judged (`raw`), the cleaned text it gave
-   * (`text`), and which path produced it. The stop reuses it when no words came in after it.
-   * Null after a trigger that started a new prompt; a trigger answered during the stop stores
-   * the text before its phrase.
+   * The cleaned text of the current prompt: each piece glued once, joined with single spaces.
+   * A trigger ends the prompt inside this text.
    */
-  cleaned: { raw: string; text: string; source: TalkTranscriptSource } | null
-  /** Set once the capture is ending (stop or the 120-second timeout). Nothing new is detected or asked of heal. */
+  cleaned: string
+  /** True once any piece of the current prompt came from the raw newest text (a failed or truncated call). */
+  fellBack: boolean
+  /**
+   * Set once the stop's text is decided, by a trigger heard while the capture is ending or by the
+   * final step. A latched segment keeps its raw words for the trail and changes nothing else.
+   */
+  latched: boolean
+  /** Set once the capture is ending (stop or the 120-second timeout). Queued segments are still cleaned, but a trigger now cuts the stop's text instead of submitting. */
   closing: boolean
   /** Set on unmount. Nothing from this capture is transcribed into the draft or submitted after it. */
   abandoned: boolean
@@ -687,37 +720,19 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     capture.queue = capture.queue.then(job).catch(() => {})
   }
 
-  // The cleaned text of the words said since the last trigger, for the stop, and which path produced it.
-  // The heal answer that judged the same text is reused. Otherwise the host heals it now, with the same
-  // bounded call. A failed call gives the raw text, so no word is lost. A trigger heard here gives the
-  // text before the phrase; the stop submits it only when autoSubmit is on, and otherwise writes it to
-  // the composer.
-  const finalText = async (capture: SegmentedCapture): Promise<{ text: string; source: TalkTranscriptSource }> => {
-    const raw = capture.accumulated.trim()
-    if (raw === '') return { text: '', source: 'raw' }
-    if (capture.cleaned !== null && capture.cleaned.raw === capture.accumulated) {
-      return { text: capture.cleaned.text, source: capture.cleaned.source }
-    }
-    try {
-      const decision = await heal(capture.accumulated)
-      const text = decision.prompt.trim()
-      return { text: !decision.trigger && text === '' ? raw : text, source: decision.source }
-    } catch {
-      return { text: raw, source: 'raw' }
-    }
-  }
-
-  // The final step: release the microphone, then put the words said since the last trigger in the composer,
-  // cleaned. With the autoSubmit setting on, they are submitted instead, as the Web Speech path does.
-  // A trigger clears that text, so no sent prompt is put back. Every stop with words appends one line to
-  // the host's transcript trail, so the raw words stay beside the cleaned text.
+  // The final step: release the microphone, then place the prompt the stop computed: in the composer
+  // as a draft, or submitted when the autoSubmit setting is on. A prompt that a trigger already sent
+  // is not in the glued text, so it is never placed again. Every stop with words appends one line to
+  // the host's transcript trail, so the raw words stay beside the cleaned text. The text is fixed
+  // before the placement, so a segment that reaches the chain later changes nothing.
   const finalizeCapture = async (capture: SegmentedCapture): Promise<void> => {
     capture.stream.getTracks().forEach(track => track.stop())
     if (captureRef.current === capture) captureRef.current = null
     syncListening()
     if (capture.abandoned) return
-    const { text, source } = await finalText(capture)
-    if (capture.abandoned) return
+    capture.latched = true
+    const text = capture.cleaned.trim()
+    const source: TalkTranscriptSource = capture.fellBack ? 'raw' : 'model'
     const action: TalkTranscriptAction = text === '' ? 'none' : settingsRef.current?.record.autoSubmit === true ? 'submit' : 'draft'
     if (capture.accumulated.trim() !== '') {
       // A failed trail write must never fail the stop: the words are already transcribed.
@@ -747,9 +762,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     })
   }
 
-  // One segment: encode, transcribe, log the raw text, then ask the heal call. A capture that
-  // is ending keeps the segment's words for the stop (finalText), asks heal nothing, and so submits
-  // nothing. An unmounted capture keeps nothing from its late segments.
+  // One segment: encode, transcribe, then clean it with one windowed call. The call gets the earlier raw
+  // words as context and this segment as the only text to clean. A latched capture keeps the segment's
+  // raw words for the trail and asks nothing. An unmounted capture keeps nothing from its late segments.
   const processSegment = async (capture: SegmentedCapture, samples: Float32Array): Promise<void> => {
     if (capture.abandoned) return
     const body = bytesToBase64(encodeWav16kMono(samples))
@@ -781,39 +796,42 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
     // Words arrived, so the note about an earlier empty segment no longer applies.
     setMic(foldMic(micRef.current, { kind: 'notice', message: undefined }))
+    // The context is the window before this segment, taken before the segment's words are appended,
+    // so a segment is never its own context.
+    const context = contextWindow(capture.accumulated)
     capture.accumulated = capture.accumulated === '' ? text : `${capture.accumulated} ${text}`
-    if (capture.closing) return
-    let decision: TalkHeal
+    // A latched capture keeps the words for the trail only: no call, and the prompt stays as it is.
+    if (capture.latched) return
+    let answer: TalkHeal
     try {
-      // The host runs the one model call (and its literal-phrase fallback) on the accumulated text.
-      decision = await heal(capture.accumulated)
-    } catch (error) {
-      // The host's fallback already ran and missed (or the call failed): keep the capture open.
-      if (capture.abandoned) return
-      setMic(foldMic(micRef.current, { kind: 'failed', message: `heal failed: ${detailOf(error)}` }))
-      return
+      answer = await heal(context, text)
+    } catch {
+      // A failed call uses the raw newest text, so no word is lost and a trigger can still fire on it.
+      answer = { prompt: text, source: 'raw' }
     }
     if (capture.abandoned) return
-    if (!decision.trigger) {
-      // The cleaned text of this answer. The stop writes it, unless more words came in first.
-      const prompt = decision.prompt.trim()
-      capture.cleaned = { raw: capture.accumulated, text: prompt === '' ? capture.accumulated.trim() : prompt, source: decision.source }
-      return
-    }
-    // A trigger answered after the capture began ending is not acted on and not submitted. Its text
-    // before the phrase becomes the stop's cleaned text, so the stop does not heal these words again.
+    // An all-filler answer is empty and adds nothing; it is never replaced with the raw text.
+    const piece = answer.source === 'raw' ? text : answer.prompt.trim()
+    if (answer.source === 'raw') capture.fellBack = true
+    if (piece !== '') capture.cleaned = capture.cleaned === '' ? piece : `${capture.cleaned} ${piece}`
+    if (triggerEnd(capture.cleaned) === null) return
+    const prompt = triggerPrompt(capture.cleaned)
     if (capture.closing) {
-      capture.cleaned = { raw: capture.accumulated, text: decision.prompt.trim(), source: decision.source }
+      // The stop is already ending: the phrase cuts the stop's text here, and the stop places it at finalize.
+      capture.cleaned = prompt
+      capture.latched = true
       return
     }
-    // The trigger sends what was said so far and starts the next prompt from empty. The
-    // capture stays open: only a stop or the 120-second timeout ends it. The mic phase is not
-    // touched here, because 'transcribed' and 'reset' would show the mic as idle while
-    // the recorder keeps running. The words are kept for the trail before the reset.
+    // The trigger sends what was said so far and starts the next prompt from empty. The capture stays
+    // open: only a stop or the 120-second timeout ends it. The mic phase is not touched here, because
+    // 'transcribed' and 'reset' would show the mic as idle while the recorder keeps running. The words
+    // are kept for the trail before the reset.
     const spoken = capture.accumulated
+    const source: TalkTranscriptSource = capture.fellBack ? 'raw' : 'model'
     capture.accumulated = ''
-    capture.cleaned = null
-    const prompt = decision.prompt.trim()
+    capture.cleaned = ''
+    capture.fellBack = false
+    capture.latched = false
     if (prompt === '') return
     // Arm the session before the prompt starts its turn, so the host knows this turn is spoken.
     // The await is required: the arm must reach the host before the prompt does.
@@ -827,7 +845,7 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     // The button may have unmounted while the arm was in flight: no prompt is submitted then.
     if (capture.abandoned) return
     // A trigger's prompt is a voice prompt too, so the trail records it like a submitted stop.
-    void logTranscript({ raw: spoken, cleaned: prompt, source: decision.source, action: 'submit' })
+    void logTranscript({ raw: spoken, cleaned: prompt, source, action: 'submit' })
       .catch((error: unknown) => {
         console.warn('[dsh-talk] transcript trail write failed:', error)
       })
@@ -912,7 +930,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       }),
       startedAt: Date.now(),
       accumulated: '',
-      cleaned: null,
+      cleaned: '',
+      fellBack: false,
+      latched: false,
       closing: false,
       abandoned: false,
       finalized: false,

@@ -32,8 +32,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     audio: (utteranceId: string) => Promise<RemoteResult<TalkAudio | null>>
     /** Transcribe one base64 WAV with the configured local STT engine. */
     transcribe: (audioData: string) => Promise<RemoteResult<TalkTranscript>>
-    /** Heal the accumulated raw transcript on the host and decide the trigger phrase. */
-    heal: (rawTranscript: string) => Promise<RemoteResult<TalkHeal>>
+    /** Clean one segment's newest text on the host, with the earlier raw words as context. */
+    heal: (context: string, text: string) => Promise<RemoteResult<TalkHeal>>
     /** Append one stop's raw and cleaned text to the host's transcript trail. */
     logTranscript: (entry: TalkTranscriptLogEntry) => Promise<RemoteResult<TalkTranscriptLogResult>>
     /** Apply the settings panel's edits as an append-only profile patch operation. */
@@ -50,7 +50,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'talk/status': () => Promise<RemoteResult<TalkStatus>>
     'talk/audio': (utteranceId: string) => Promise<RemoteResult<TalkAudio | null>>
     'talk/transcribe': (audioData: string) => Promise<RemoteResult<TalkTranscript>>
-    'talk/heal': (rawTranscript: string) => Promise<RemoteResult<TalkHeal>>
+    'talk/heal': (context: string, text: string) => Promise<RemoteResult<TalkHeal>>
     'talk/logTranscript': (entry: TalkTranscriptLogEntry) => Promise<RemoteResult<TalkTranscriptLogResult>>
     'talk/applySettings': (settings: TalkSettingsInput) => Promise<RemoteResult<TalkSettingsResult>>
     'talk/interrupt': () => Promise<RemoteResult<TalkInterruptResult>>

@@ -2,7 +2,8 @@
  * Windowed cleanup contract (ticket 02a): `healWindow` sends one user message with a labeled
  * CONTEXT block (only when context is non-empty) and a labeled TEXT TO CLEAN block, returns the
  * model's prompt with source `model`, and returns the raw newest text with source `raw` for
- * every failure. The whole-text path is covered by `tests/heal.spec.ts` and is not repeated here.
+ * every failure. This file is the request and answer contract of the one heal call; the byte
+ * identity of the prompt constant is in `tests/heal.spec.ts`.
  *
  * Stubs are real loopback HTTP servers, the same pattern as `tests/heal.spec.ts`, so each
  * request crosses the process boundary the way production does. No test reaches the Bifrost
@@ -15,7 +16,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
-import { HEAL_MODEL, HEAL_SYSTEM_PROMPT, HEAL_WINDOW_SYSTEM_PROMPT, healWindow } from '../src/heal.ts'
+import { HEAL_MODEL, HEAL_WINDOW_SYSTEM_PROMPT, healWindow } from '../src/heal.ts'
 
 const CONTEXT = 'so I opened the ssh socket for the agent'
 const TEXT = 'read the config that is my prompt'
@@ -134,9 +135,9 @@ describe('request: one user message with labeled blocks', () => {
     ])
   })
 
-  it('sends the same model, sampling, token cap, reasoning and response mode as the whole-text call', async () => {
-    // Breaks if: the windowed call drifts from the whole-text call on any route-facing field: the
-    // model alias, temperature, the 300-token cap, reasoning effort, or the JSON-object mode.
+  it('sends the route-facing fields the cleanup is measured with', async () => {
+    // Breaks if: the model alias, temperature, the 300-token cap, reasoning effort, or the
+    // JSON-object mode changes, because the measured timing and the answer shape depend on each.
     const stub = await startStub()
     await clean(CONTEXT, TEXT, stub.endpoint)
     expect(stub.requests[0]).toMatchObject({
@@ -263,10 +264,9 @@ describe('the windowed prompt constant states its rules', () => {
     expect(HEAL_WINDOW_SYSTEM_PROMPT.endsWith('Never change any other wording.')).toBe(true)
   })
 
-  it('asks for no trigger field, and is not the whole-text prompt', () => {
-    // Breaks if: the windowed prompt reintroduces the model-decided trigger, or is aliased to the
-    // whole-text prompt, which still asks for a trigger field the windowed result does not read.
+  it('asks for no trigger field', () => {
+    // Breaks if: the windowed prompt reintroduces the model-decided trigger. The client's matcher
+    // decides where the prompt ends, so a trigger field would be a second, unread decision.
     expect(HEAL_WINDOW_SYSTEM_PROMPT).not.toContain('"trigger"')
-    expect(HEAL_WINDOW_SYSTEM_PROMPT).not.toBe(HEAL_SYSTEM_PROMPT)
   })
 })

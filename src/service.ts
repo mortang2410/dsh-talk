@@ -20,7 +20,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type { Config, ResolvedConfig, TtsEngine } from './config.ts'
 import { resolveConfig } from './config.ts'
 import { EngineFailure, synthesize, transcribeFunasr, transcribeWhisper } from './engine.ts'
-import { healTranscript } from './heal.ts'
+import { healWindow } from './heal.ts'
 import { sanitizeText } from './sanitize.ts'
 import {
   appendSettingsFragment,
@@ -463,17 +463,23 @@ export class TalkService extends TypertRemoteService {
   }
 
   /**
-   * Heal the accumulated raw transcript of one segmented capture and decide the
-   * trigger phrase, with one call to the host's local model (`src/heal.ts`) using
-   * its own endpoint and timeout. A `HealFailure` throws, so the client receives a
-   * failure and keeps its capture open, the same as a failed `transcribe`.
+   * Clean the newest text of one segmented capture, with the client's fixed window of
+   * earlier raw words as context, through one call to the host's local model
+   * (`healWindow` in `src/heal.ts`). A model failure is not an error here: the answer
+   * is the raw newest text with source `raw`, so the client keeps the words. The
+   * arguments are checked before anything else, so a malformed call fails at the host
+   * instead of reaching the model.
    *
-   * @param rawTranscript - the accumulated raw transcript from the client.
-   * @returns the trigger decision, the cleaned prompt and the deciding source.
+   * @param context - the earlier raw words the model must not clean; empty when there are none.
+   * @param text - the newest raw text, the only text the model cleans.
+   * @returns the cleaned or raw newest text and the source that produced it.
    */
-  async heal(rawTranscript: string): Promise<TalkHeal> {
-    const decision = await healTranscript(rawTranscript)
-    return { trigger: decision.trigger, prompt: decision.prompt, source: decision.source }
+  async heal(context: string, text: string): Promise<TalkHeal> {
+    if (typeof context !== 'string' || typeof text !== 'string') {
+      throw new Error('dsh-talk: heal context and text must be strings')
+    }
+    const result = await healWindow(context, text)
+    return { prompt: result.prompt, source: result.source }
   }
 
   /**

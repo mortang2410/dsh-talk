@@ -14,7 +14,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { CAPTURE_FLUSH_MESSAGE } from '../src/client/capture-worklet.ts'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
-import { healTranscript } from '../src/heal.ts'
+import { healWindow } from '../src/heal.ts'
 import type { TalkHeal, TalkStatus, TalkTranscript, TalkTranscriptLogEntry, TalkVoiceTurn } from '../src/wire.ts'
 
 const TICK_MS = 500
@@ -25,7 +25,7 @@ const SPEECH_LEVEL = 0.2
 /** Under the energy floor (record.vad.energyThreshold is 0.01), so not speech. */
 const SOFT_LEVEL = 0.005
 /**
- * The model endpoint as the host sees it. The host's `talk/heal` runs `healTranscript`
+ * The model endpoint as the host sees it. The host's `talk/heal` runs `healWindow`
  * against it; the browser must never fetch it, and nothing here points at port 8090.
  */
 const HOST_MODEL_URL = 'http://host-model.test/v1/chat/completions'
@@ -47,12 +47,26 @@ const SETTINGS: TalkStatus = {
   patchFile: null,
 }
 
+/** The same settings with autoSubmit on, for the cases where a stop or a trigger must submit at once. */
+const AUTO_SUBMIT: TalkStatus = { ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } }
+
+/**
+ * Ten distinct words for segment `n` (for example "s2w1 ... s2w10"), so a window check can tell
+ * which segment each word came from.
+ */
+function segmentWords(n: number): string {
+  return Array.from({ length: 10 }, (_, index) => `s${String(n)}w${String(index + 1)}`).join(' ')
+}
+
 /** Base64 payloads sent to `transcribe`, in call order. */
 const transcribed: string[] = []
 /** Ordered event trace: segment raw logs and heal calls. */
 const events: string[] = []
-/** Every `talk/heal` call the browser made, in order: the accumulated transcript it sent. */
-const healCalls: string[] = []
+/**
+ * Every `talk/heal` call the browser made, in order: the window of earlier raw words (`context`)
+ * and the newest segment (`text`). The window is what the model may read as CONTEXT.
+ */
+const healCalls: Array<{ context: string; text: string }> = []
 /** Every URL the browser fetched. A correct browser fetches only the host's model call, once per heal. */
 const fetched: string[] = []
 /** Transcripts the stubbed transcriber returns, one per call. */
@@ -66,8 +80,13 @@ let healGate: Promise<void> | null = null
 let openHealGate: () => void = () => {}
 /** The microphone level the test feeds into the capture worklet. */
 let micLevel = 0
-/** What the host's model call does: answer like the model, or fail (the host fallback then decides). */
-let healMode: 'model' | 'error' = 'model'
+/**
+ * What the host's model call does: answer like the model, fail with a 500, or answer with
+ * finish_reason `length` (a cut answer, which the host must treat as a failure).
+ */
+let healMode: 'model' | 'error' | 'truncated' = 'model'
+/** Answers the model gives, first in first out, before the stand-in answers. */
+let modelAnswers: string[] = []
 /** Text the button wrote into the composer draft. */
 const drafts: string[] = []
 /** Texts the button submitted. */
@@ -80,8 +99,6 @@ let logFails = false
 const contexts: FakeAudioContext[] = []
 /** Every capture worklet node the button created, in order. The test feeds blocks to their ports. */
 const workletNodes: FakeWorkletNode[] = []
-
-const FINAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
 
 class FakeAudioContext {
   readonly sampleRate = SAMPLE_RATE
@@ -140,31 +157,33 @@ async function fakeFetch(url: string, init?: { body?: string }): Promise<unknown
   fetched.push(url)
   if (url !== HOST_MODEL_URL) return { ok: false, status: 599, text: async () => '' }
   const body = JSON.parse(init?.body ?? '{}') as { messages: Array<{ content: string }> }
-  const raw = (body.messages[1]?.content ?? '').replace(/^raw transcript: /u, '')
-  events.push(`heal:${raw}`)
+  // Only the TEXT TO CLEAN block is cleaned; the CONTEXT block is never the text the model is asked about.
+  const toClean = /TEXT TO CLEAN \(return the cleaned version of exactly this\): ([^\n]*)$/u.exec(body.messages[1]?.content ?? '')
+  const text = toClean?.[1] ?? ''
+  events.push(`heal:${text}`)
   if (healMode === 'error') return { ok: false, status: 500, text: async () => '' }
-  // A stand-in for the model's filler removal: "um" is dropped wherever it stands.
-  const cleaned = raw.replace(/\bum\s+/giu, '')
-  const trigger = FINAL_PHRASE.test(raw)
-  const prompt = trigger ? cleaned.replace(FINAL_PHRASE, '').trim() : cleaned
-  const content = JSON.stringify({ trigger, prompt })
-  return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) }
+  // The stand-in for the model: the next queued answer, else the text with "um" dropped. It never
+  // decides the trigger: the trigger phrase stays in the prompt as ordinary words, as the model sees it.
+  const answer = modelAnswers.shift() ?? text.replace(/\bum\s+/giu, '').trim()
+  const content = JSON.stringify({ prompt: answer })
+  const finishReason = healMode === 'truncated' ? 'length' : 'stop'
+  return {
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ choices: [{ message: { content }, finish_reason: finishReason }] }),
+  }
 }
 
 /**
- * The host's `talk/heal`, as the wire delivers it: the real `healTranscript` against the
- * host model URL, with a failure reaching the browser as a failed call (its message is
- * the one `src/service.ts` produces through the wire).
+ * The host's `talk/heal`, as the wire delivers it: the real `healWindow` against the host model URL.
+ * `healWindow` never throws, so a failed call reaches the browser as a raw answer, not as an error:
+ * the browser keeps the raw newest text for that segment and shows nothing.
  */
-async function hostHeal(rawTranscript: string): Promise<TalkHeal> {
-  healCalls.push(rawTranscript)
+async function hostHeal(context: string, text: string): Promise<TalkHeal> {
+  healCalls.push({ context, text })
   if (healGate !== null) await healGate
-  try {
-    const decision = await healTranscript(rawTranscript, { endpoint: HOST_MODEL_URL, logRawTranscript: () => {} })
-    return { trigger: decision.trigger, prompt: decision.prompt, source: decision.source }
-  } catch (error) {
-    throw new Error(`talk.heal failed: INTERNAL: ${error instanceof Error ? error.message : String(error)}`)
-  }
+  const result = await healWindow(context, text, { endpoint: HOST_MODEL_URL })
+  return { prompt: result.prompt, source: result.source }
 }
 
 /** Hold every host heal call in flight until openHealGate runs. */
@@ -324,6 +343,7 @@ beforeEach(() => {
   transcriptQueue = []
   micLevel = 0
   healMode = 'model'
+  modelAnswers = []
   transcribeFailures = 0
   trackStops = 0
   healGate = null
@@ -390,6 +410,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
   })
 
   it('sends the accumulated prompt at once on the trigger, without the phrase, and keeps the mic open', async () => {
+    // Breaks if: the trigger waits for the stop, the phrase reaches the sent prompt, or the mic closes on a trigger.
     transcriptQueue = ['first sentence', 'second sentence', 'third sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
@@ -405,7 +426,8 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('does not send when the phrase is mid-sentence', async () => {
+  it('a phrase that opens a segment sends nothing, and the words after it are dropped', async () => {
+    // Breaks if: an empty prompt is submitted, or the words after the phrase reach a later prompt or the draft.
     transcriptQueue = ['that is my prompt was a phrase I once said']
     await mountAndSettle()
     await startCapture()
@@ -413,6 +435,11 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     expect(sent).toEqual([])
     expect(recording()).toBe(true)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    expect(drafts).toEqual([])
   })
 
   it('stops after 120 seconds of silence and leaves the transcript in the composer unsent', async () => {
@@ -475,7 +502,8 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('sends the text before the phrase when the heal endpoint fails and the transcript ends with the phrase', async () => {
+  it('a failed heal falls back to the raw text, so a trigger in that text still submits the words before it', async () => {
+    // Breaks if: a failed call drops the trigger check, or the words before the phrase are lost when the model is down.
     healMode = 'error'
     transcriptQueue = ['first sentence that is my prompt']
     await mountAndSettle()
@@ -484,10 +512,14 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     expect(sent).toEqual(['first sentence'])
     expect(recording()).toBe(true)
+    expect(transcriptLog).toEqual([
+      { raw: 'first sentence that is my prompt', cleaned: 'first sentence', source: 'raw', action: 'submit' },
+    ])
     expectHostOnlyFetches()
   })
 
-  it('keeps the capture open and shows the error when the heal endpoint fails and there is no phrase', async () => {
+  it('a failed heal keeps the capture open with no error shown, and the stop writes the raw words', async () => {
+    // Breaks if: a failed call shows an error or sends anything, or the stop loses the raw words of the failed segment.
     healMode = 'error'
     transcriptQueue = ['first sentence']
     await mountAndSettle()
@@ -496,11 +528,18 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     expect(recording()).toBe(true)
     expect(sent).toEqual([])
-    expect(errorText()).toContain('does not end with the trigger phrase')
+    expect(drafts).toEqual([])
+    expect(errorText()).toBeNull()
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    expect(drafts).toEqual(['first sentence'])
     expectHostOnlyFetches()
   })
 
   it('logs each segment raw transcript before the heal call that judges it', async () => {
+    // Breaks if: a call's text is the whole transcript again (the window is not the text), or the raw log follows its call.
     transcriptQueue = ['first sentence', 'second sentence']
     await mountAndSettle()
     await startCapture()
@@ -512,7 +551,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
       'segment:first sentence',
       'heal:first sentence',
       'segment:second sentence',
-      'heal:first sentence second sentence',
+      'heal:second sentence',
     ])
   })
 
@@ -531,7 +570,8 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('sends the accumulated transcript to the host heal route, and the browser never fetches the heal endpoint', async () => {
+  it('sends each segment with its window of earlier words to the host heal route, and the browser never fetches the heal endpoint', async () => {
+    // Breaks if: a call sends the accumulated transcript instead of its window and newest segment, or the browser fetches the heal endpoint itself.
     transcriptQueue = ['first sentence', 'second sentence']
     await mountAndSettle()
     await startCapture()
@@ -539,12 +579,16 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     await speak(1000)
     await advance(1000)
-    expect(healCalls).toEqual(['first sentence', 'first sentence second sentence'])
+    expect(healCalls).toEqual([
+      { context: '', text: 'first sentence' },
+      { context: 'first sentence', text: 'second sentence' },
+    ])
     expect(fetched).toEqual(healCalls.map(() => HOST_MODEL_URL))
     expect(fetched.filter(url => url.includes(':8090'))).toEqual([])
   })
 
-  it('a trigger from the host heal route submits the cleaned prompt and keeps the capture open', async () => {
+  it('a trigger found in the cleaned text submits the prompt and keeps the capture open', async () => {
+    // Breaks if: the trigger is read from the model's answer instead of the glued text, or the capture closes on a trigger.
     transcriptQueue = ['first sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
@@ -552,10 +596,11 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(1000)
     expect(sent).toEqual(['first sentence'])
     expect(recording()).toBe(true)
-    expect(healCalls).toEqual(['first sentence that is my prompt'])
+    expect(healCalls).toEqual([{ context: '', text: 'first sentence that is my prompt' }])
   })
 
-  it('after a trigger the next prompt starts from empty, because the capture stays open', async () => {
+  it('after a trigger the next prompt starts from empty, with an empty window, because the capture stays open', async () => {
+    // Breaks if: the window or the cleaned text survives a trigger, so the next prompt carries the last one's words.
     transcriptQueue = ['first sentence that is my prompt', 'second sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
@@ -566,25 +611,37 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(sent).toEqual(['first sentence', 'second sentence'])
     expect(recording()).toBe(true)
     expect(drafts).toEqual([])
+    expect(healCalls).toEqual([
+      { context: '', text: 'first sentence that is my prompt' },
+      { context: '', text: 'second sentence that is my prompt' },
+    ])
   })
 
-  it('a HealFailure from the host heal route shows its error and keeps the capture open', async () => {
+  it('a failed heal keeps its raw words in the window and the prompt, and the next segment submits them with its trigger', async () => {
+    // Breaks if: the raw fallback leaves the window or the glued prompt, or a failed call shows an error.
     healMode = 'error'
-    transcriptQueue = ['first sentence']
+    transcriptQueue = ['first sentence', 'second sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
     await speak(1000)
     await advance(1000)
-    expect(recording()).toBe(true)
+    expect(errorText()).toBeNull()
     expect(sent).toEqual([])
-    expect(errorText()).toBe(
-      'heal failed: talk.heal failed: INTERNAL: heal call failed (endpoint responded 500) and the transcript does not end with the trigger phrase',
-    )
+    healMode = 'model'
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['first sentence second sentence'])
+    expect(errorText()).toBeNull()
+    expect(healCalls).toEqual([
+      { context: '', text: 'first sentence' },
+      { context: 'first sentence', text: 'second sentence that is my prompt' },
+    ])
     expectHostOnlyFetches()
   })
 
   it('unmounting mid-capture releases the microphone and the capture graph, and a heal answer that arrives later submits nothing', async () => {
     // Blocker 1 (P-F6): the stale closure must not submit, and nothing may keep capturing.
+    // Breaks if: a heal answer that lands after unmount submits or drafts, or the graph stays open.
     transcriptQueue = ['first sentence', 'second sentence that is my prompt']
     holdHeals()
     await mountAndSettle()
@@ -609,8 +666,10 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
   })
 
   it('a trigger answered after the 120-second trip is dropped, and the text before the phrase reaches the composer unsent', async () => {
-    // Blocker 2 (P-F2): the answer lands after the trip; it must not submit. The stop heals the text
-    // again, so the composer gets the text before the phrase, and the phrase itself is not written.
+    // Blocker 2 (P-F2): the answer lands after the trip; it must not submit. The segment was already
+    // judged once, so the stop does not ask again: the answer's cut is the stop's text, so the composer
+    // gets the text before the phrase, and the phrase itself is not written.
+    // Breaks if: the late answer submits, the stop calls the model a second time, or the phrase reaches the draft.
     transcriptQueue = ['hello that is my prompt']
     holdHeals()
     await mountAndSettle()
@@ -624,11 +683,13 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await flush()
     expect(sent).toEqual([])
     expect(drafts).toEqual(['hello'])
+    expect(healCalls).toEqual([{ context: '', text: 'hello that is my prompt' }])
   })
 
   it('a trigger whose voice-turn arm answers after unmount submits nothing', async () => {
     // Review round 1 F4: the arm is awaited after the trigger decision, so an unmount during the
     // await must stop the submit that follows it.
+    // Breaks if: the submit runs after an unmount that happens during the arm's await.
     transcriptQueue = ['hello that is my prompt']
     let releaseArm: () => void = () => {}
     const voiceTurn = vi.fn((_sessionId: string): Promise<TalkVoiceTurn> => new Promise(resolve => {
@@ -842,8 +903,9 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(sent).toEqual([])
   })
 
-  it('a stop writes the cleaned text, not the raw transcript, when the last heal call did not fire', async () => {
+  it('a stop writes the cleaned text, not the raw transcript, and asks the model no second time', async () => {
     // B4: the heal answer for the segment is kept, and the stop writes its cleaned prompt to the composer.
+    // Breaks if: the stop re-judges a segment already answered, or it writes the raw words over the cleaned ones.
     transcriptQueue = ['um first sentence']
     await mountAndSettle()
     await startCapture()
@@ -855,13 +917,14 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await flush()
     await flush()
     // The stop reuses the answer; it asks heal no second time.
-    expect(healCalls).toEqual(['um first sentence'])
+    expect(healCalls).toEqual([{ context: '', text: 'um first sentence' }])
     expect(drafts).toEqual(['first sentence'])
     expect(sent).toEqual([])
   })
 
-  it('a stop heals the text no heal call judged, and writes its cleaned form', async () => {
+  it('a stop heals the open segment once, with the window of the segment before it, and writes its cleaned form', async () => {
     // B4: the open segment's words arrive after the stop began, so no heal call judged them. The stop asks heal once.
+    // Breaks if: the stop's call has no window, or it is given the whole transcript instead of the newest segment.
     transcriptQueue = ['first part', 'um last words']
     await mountAndSettle()
     await startCapture()
@@ -873,13 +936,17 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     })
     await flush()
     await flush()
-    expect(healCalls).toEqual(['first part', 'first part um last words'])
+    expect(healCalls).toEqual([
+      { context: '', text: 'first part' },
+      { context: 'first part', text: 'um last words' },
+    ])
     expect(drafts).toEqual(['first part last words'])
     expect(sent).toEqual([])
   })
 
   it('a stop keeps the raw text when the heal call fails and the text has no trigger phrase', async () => {
-    // B4: the stop-time heal fails too, so the words the speaker said are written as they were transcribed.
+    // B4: the segment's heal call failed, so its raw words stand in and the stop writes them as they were transcribed.
+    // Breaks if: the failed segment's raw words are dropped, or the stop writes an answer that was never given.
     healMode = 'error'
     transcriptQueue = ['um first sentence']
     await mountAndSettle()
@@ -895,9 +962,10 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(sent).toEqual([])
   })
 
-  it('a failed heal at the stop fires on "that is my problem", and autoSubmit sends the words before it', async () => {
-    // B5 during an outage: the literal check accepts the mishearing, so the phrase itself is
+  it('a failed heal still fires on the misheard "that is my problem" mid-capture, and autoSubmit sends the words before it', async () => {
+    // B5 during an outage: the matcher accepts the mishearing on the raw text, so the phrase itself is
     // not submitted as part of the prompt.
+    // Breaks if: a failed call disables the trigger check, or the misheard phrase reaches the prompt.
     healMode = 'error'
     transcriptQueue = ['one thought that is my problem']
     await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
@@ -913,8 +981,10 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
-  it('a stop heals the text whose heal call failed during the capture', async () => {
-    // B4: the heal call for the segment failed, so no answer covers its words. The stop heals them once the host answers.
+  it('a segment whose heal call failed is not healed again at the stop: its raw words are written as transcribed', async () => {
+    // SPEC: a failed call falls back to the raw text for that segment only, and the stop heals only the
+    // segments still waiting for cleanup. The raw fallback is logged as source raw.
+    // Breaks if: the stop retries a segment already answered by a failed call, or the trail calls raw words model.
     healMode = 'error'
     transcriptQueue = ['um first sentence']
     await mountAndSettle()
@@ -927,12 +997,14 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     })
     await flush()
     await flush()
-    expect(healCalls).toEqual(['um first sentence', 'um first sentence'])
-    expect(drafts).toEqual(['first sentence'])
+    expect(healCalls).toEqual([{ context: '', text: 'um first sentence' }])
+    expect(drafts).toEqual(['um first sentence'])
+    expect(transcriptLog).toEqual([{ raw: 'um first sentence', cleaned: 'um first sentence', source: 'raw', action: 'draft' }])
   })
 
   it('a stop after the trigger phrase writes the text before the phrase to the composer, and sends nothing', async () => {
     // B4: a trigger heard at the stop is not submitted (the capture is ending), and the phrase is not written.
+    // Breaks if: the trigger at the stop submits, or the phrase or the words after it reach the draft.
     transcriptQueue = ['first sentence', 'second sentence that is my prompt']
     await mountAndSettle()
     await startCapture()
@@ -944,7 +1016,10 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     })
     await flush()
     await flush()
-    expect(healCalls).toEqual(['first sentence', 'first sentence second sentence that is my prompt'])
+    expect(healCalls).toEqual([
+      { context: '', text: 'first sentence' },
+      { context: 'first sentence', text: 'second sentence that is my prompt' },
+    ])
     expect(drafts).toEqual(['first sentence second sentence'])
     expect(sent).toEqual([])
   })
@@ -952,13 +1027,14 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
   it('a trigger heal still in flight at the stop is reused, not asked again, and sends nothing', async () => {
     // Review round 5, R5-1: the trigger answer arrives after the stop began. Its text before the phrase is the
     // stop's cleaned text, so the stop makes no second heal call and submits nothing.
+    // Breaks if: the stop asks the model for the same segment again, or the cut prompt is submitted instead of drafted.
     transcriptQueue = ['one thought that is my prompt']
     holdHeals()
     await mountAndSettle()
     await startCapture()
     await speak(1000)
     await advance(1000)
-    expect(healCalls).toEqual(['one thought that is my prompt'])
+    expect(healCalls).toEqual([{ context: '', text: 'one thought that is my prompt' }])
     await act(async () => {
       button().click()
     })
@@ -966,7 +1042,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     openHealGate()
     await flush()
     await flush()
-    expect(healCalls).toEqual(['one thought that is my prompt'])
+    expect(healCalls).toEqual([{ context: '', text: 'one thought that is my prompt' }])
     expect(drafts).toEqual(['one thought'])
     expect(sent).toEqual([])
   })
@@ -974,13 +1050,14 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
   it('a trigger heal still in flight at the stop, with autoSubmit on, submits the text before the phrase once', async () => {
     // Review round 6, R6-1: with autoSubmit on, the stop submits the cleaned text before the phrase. The trigger
     // prompt itself is not sent, and no second heal call is made.
+    // Breaks if: the stop asks the model for the same segment again, or the cut prompt is submitted twice or not at all.
     transcriptQueue = ['one thought that is my prompt']
     holdHeals()
-    await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
+    await mountAndSettle(AUTO_SUBMIT)
     await startCapture()
     await speak(1000)
     await advance(1000)
-    expect(healCalls).toEqual(['one thought that is my prompt'])
+    expect(healCalls).toEqual([{ context: '', text: 'one thought that is my prompt' }])
     await act(async () => {
       button().click()
     })
@@ -988,13 +1065,14 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     openHealGate()
     await flush()
     await flush()
-    expect(healCalls).toEqual(['one thought that is my prompt'])
+    expect(healCalls).toEqual([{ context: '', text: 'one thought that is my prompt' }])
     expect(sent).toEqual(['one thought'])
     expect(drafts).toEqual([])
   })
 
   it('a stop submits the words said so far when the autoSubmit setting is on', async () => {
     // B14: the host path honours record.autoSubmit at the stop, as the Web Speech path does.
+    // Breaks if: a stop with autoSubmit on drafts instead of submitting, or a stop with autoSubmit off submits.
     transcriptQueue = ['first sentence']
     await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
     await startCapture()
@@ -1011,6 +1089,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
 
   it('a stop appends the raw text, the cleaned text, and the draft action to the transcript trail', async () => {
     // The trail: the raw words stay beside the cleaned text, so the model's cleanup can be checked.
+    // Breaks if: the stop's trail line drops the raw words, writes the cleaned text as raw, or reports the wrong action.
     transcriptQueue = ['um first sentence']
     await mountAndSettle()
     await startCapture()
@@ -1027,6 +1106,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
   })
 
   it('the trail records a submitted stop as submit, and a trigger prompt as submit too', async () => {
+    // Breaks if: the trigger's trail line loses its raw words, or a submitted line says draft.
     transcriptQueue = ['um first sentence']
     await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
     await startCapture()
@@ -1054,6 +1134,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
 
   it('a failed trail write leaves the stop untouched and writes the draft', async () => {
     // The trail is a record, not a dependency: losing it must not lose the words.
+    // Breaks if: a failed trail write stops the draft, or the stop throws instead of drafting.
     logFails = true
     transcriptQueue = ['um first sentence']
     await mountAndSettle()
@@ -1067,5 +1148,264 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await flush()
     expect(drafts).toEqual(['first sentence'])
     expect(transcriptLog).toEqual([])
+  })
+
+  it('the first segment of a capture has an empty context, and a context under 30 words is every earlier raw word', async () => {
+    // Breaks if: the first call carries words it never heard, or a short window drops or repeats earlier words.
+    transcriptQueue = ['alpha beta gamma', 'delta epsilon', 'zeta']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    expect(healCalls).toEqual([
+      { context: '', text: 'alpha beta gamma' },
+      { context: 'alpha beta gamma', text: 'delta epsilon' },
+      { context: 'alpha beta gamma delta epsilon', text: 'zeta' },
+    ])
+  })
+
+  it('a long capture sends at most the last 30 earlier raw words as context, and only the newest segment as text', async () => {
+    // Breaks if: the window grows past 30 words, the window is taken after the segment is appended (so a segment is its own context), or a call's text is more than its newest segment.
+    const pieces = [1, 2, 3, 4, 5].map(segmentWords)
+    transcriptQueue = [...pieces]
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    expect(healCalls).toHaveLength(5)
+    expect(healCalls[0]).toEqual({ context: '', text: pieces[0] })
+    expect(healCalls[1]).toEqual({ context: pieces[0], text: pieces[1] })
+    // Before segment 5 there are 40 earlier words; the window is the last 30, which is segments 2 to 4 whole.
+    expect(healCalls[4]).toEqual({ context: [pieces[1], pieces[2], pieces[3]].join(' '), text: pieces[4] })
+    expect(healCalls[4]?.context.split(' ')).toHaveLength(30)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    // The window limits what the model sees, never the trail: the stop's raw line keeps all 50 words.
+    expect(drafts).toEqual([pieces.join(' ')])
+    expect(transcriptLog).toEqual([{ raw: pieces.join(' '), cleaned: pieces.join(' '), source: 'model', action: 'draft' }])
+  })
+
+  it('two pieces are glued with one space, and the draft holds the model answers, not a copy of the context', async () => {
+    // Breaks if: the draft repeats the context, the pieces are joined without a space, or the raw words replace the model's answer for a piece.
+    transcriptQueue = ['read the config', 'config for the ssh socket']
+    modelAnswers = ['read the config', 'for the ssh socket']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    expect(healCalls[1]).toEqual({ context: 'read the config', text: 'config for the ssh socket' })
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['read the config for the ssh socket'])
+  })
+
+  const SPLITS: Array<[string, string]> = [
+    ['first sentence that', 'is my prompt'],
+    ['first sentence that is', 'my prompt'],
+    ['first sentence that is my', 'prompt'],
+  ]
+  for (const [first, second] of SPLITS) {
+    it(`a trigger phrase split between segments as "${first}" and "${second}" fires, and the prompt excludes the phrase`, async () => {
+      // Breaks if: the matcher runs on each segment alone instead of the glued text, so a phrase split across a boundary never fires.
+      transcriptQueue = [first, second]
+      await mountAndSettle()
+      await startCapture()
+      await speak(1000)
+      await advance(1000)
+      expect(sent).toEqual([])
+      await speak(1000)
+      await advance(1000)
+      expect(sent).toEqual(['first sentence'])
+      expect(drafts).toEqual([])
+      expect(recording()).toBe(true)
+    })
+  }
+
+  it('a phrase in the middle of a segment ends the prompt there: the words after it are never submitted, and stay raw in the trail', async () => {
+    // Breaks if: the words after the phrase reach a sent prompt or the draft, or they are missing from the trail's raw text.
+    transcriptQueue = ['first sentence that is my prompt and then more words']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['first sentence'])
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(sent).toEqual(['first sentence'])
+    expect(drafts).toEqual([])
+    expect(transcriptLog).toEqual([
+      { raw: 'first sentence that is my prompt and then more words', cleaned: 'first sentence', source: 'model', action: 'submit' },
+    ])
+  })
+
+  it('an all-filler segment answered with an empty prompt adds nothing, and is never replaced with its raw words', async () => {
+    // Breaks if: an empty answer falls back to the raw "um", the empty segment's words reach the draft, or the trail marks the stop raw.
+    transcriptQueue = ['um', 'first sentence', 'um']
+    modelAnswers = ['', 'first sentence', '']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(healCalls.map(call => call.text)).toEqual(['um', 'first sentence', 'um'])
+    expect(drafts).toEqual(['first sentence'])
+    expect(transcriptLog).toEqual([{ raw: 'um first sentence um', cleaned: 'first sentence', source: 'model', action: 'draft' }])
+  })
+
+  it('a capture whose every segment is filler writes nothing to the composer, and the trail logs action none', async () => {
+    // Breaks if: an all-filler capture drafts raw words or an empty draft, or its trail line loses the raw words.
+    transcriptQueue = ['um']
+    modelAnswers = ['']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(drafts).toEqual([])
+    expect(sent).toEqual([])
+    expect(transcriptLog).toEqual([{ raw: 'um', cleaned: '', source: 'model', action: 'none' }])
+  })
+
+  it('a truncated heal answer counts as a failure: its raw words stand in, and a trigger in them still fires', async () => {
+    // Breaks if: a length-capped answer is used as the cleaned text (it may end mid-sentence), or a trigger in the raw words is missed.
+    healMode = 'truncated'
+    transcriptQueue = ['um first sentence that is my prompt']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['um first sentence'])
+    expect(recording()).toBe(true)
+    expect(errorText()).toBeNull()
+    expect(transcriptLog).toEqual([
+      { raw: 'um first sentence that is my prompt', cleaned: 'um first sentence', source: 'raw', action: 'submit' },
+    ])
+    expectHostOnlyFetches()
+  })
+
+  it('a trigger submits at once with autoSubmit on too, and a trigger never writes the draft', async () => {
+    // Breaks if: autoSubmit changes when a trigger submits, or a trigger writes the composer draft.
+    transcriptQueue = ['first sentence that is my prompt']
+    await mountAndSettle(AUTO_SUBMIT)
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['first sentence'])
+    expect(drafts).toEqual([])
+    expect(recording()).toBe(true)
+  })
+
+  it('a trigger heard during the stop is cut and its tail dropped, and with autoSubmit on the prompt is submitted only at the stop', async () => {
+    // Breaks if: the trigger submits before the stop's final step, the tail after the phrase reaches the prompt, or the trail records the wrong action.
+    transcriptQueue = ['first sentence', 'second sentence that is my prompt and more']
+    await mountAndSettle(AUTO_SUBMIT)
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    expect(sent).toEqual([])
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(sent).toEqual(['first sentence second sentence'])
+    expect(drafts).toEqual([])
+    expect(transcriptLog).toEqual([
+      { raw: 'first sentence second sentence that is my prompt and more', cleaned: 'first sentence second sentence', source: 'model', action: 'submit' },
+    ])
+  })
+
+  it('a segment that reaches the queue after a closing trigger changes neither the prompt nor the draft, stays raw in the trail, and makes no heal call', async () => {
+    // Breaks if: a latched capture asks the model again, a late segment's words reach the prompt or the draft, or they are missing from the trail's raw text.
+    transcriptQueue = ['first sentence', 'second sentence that is my prompt', 'late words']
+    holdHeals()
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    expect(healCalls.map(call => call.text)).toEqual(['first sentence'])
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    openHealGate()
+    await flush()
+    await flush()
+    await flush()
+    expect(healCalls).toEqual([
+      { context: '', text: 'first sentence' },
+      { context: 'first sentence', text: 'second sentence that is my prompt' },
+    ])
+    expect(drafts).toEqual(['first sentence second sentence'])
+    expect(sent).toEqual([])
+    expect(transcriptLog).toEqual([
+      { raw: 'first sentence second sentence that is my prompt late words', cleaned: 'first sentence second sentence', source: 'model', action: 'draft' },
+    ])
+  })
+
+  it('a stop with several queued segments makes one heal call per segment, each with its own window', async () => {
+    // Breaks if: a queued segment gets no call of its own, the stop asks once for the whole transcript, or a window is taken before the segment before it is appended.
+    transcriptQueue = ['alpha one', 'beta two', 'gamma three']
+    holdHeals()
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    openHealGate()
+    await flush()
+    await flush()
+    await flush()
+    expect(healCalls).toEqual([
+      { context: '', text: 'alpha one' },
+      { context: 'alpha one', text: 'beta two' },
+      { context: 'alpha one beta two', text: 'gamma three' },
+    ])
+    expect(drafts).toEqual(['alpha one beta two gamma three'])
   })
 })

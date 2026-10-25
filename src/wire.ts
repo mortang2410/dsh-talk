@@ -287,28 +287,25 @@ export const TALK_LATEST_SCHEMA = z.object({
 })
 
 /**
- * Result of `talk/heal`: the host's trigger decision for the accumulated raw
- * transcript. `trigger` is true when the speaker ended it with the trigger phrase;
- * `prompt` is the cleaned text without the phrase; `source` names which path decided.
+ * Result of `talk/heal`: the windowed cleanup of one segment. `prompt` is the cleaned
+ * newest text, or the raw newest text when `source` is `raw`. The trigger phrase is not
+ * removed here: the client's matcher decides where the prompt ends.
  */
 export interface TalkHeal {
-  /** True when the speaker ended the transcript with the trigger phrase. */
-  trigger: boolean
-  /** The cleaned prompt; the trigger phrase is removed when `trigger` is true. */
+  /** The cleaned newest text when `source` is `model`; the raw newest text when `source` is `raw`. */
   prompt: string
-  /** `model` when the host's model call answered; `fallback` when the literal-phrase check decided. */
-  source: 'model' | 'fallback'
+  /** `model` when the model answered; `raw` when the call failed, timed out, was truncated or was malformed. */
+  source: 'model' | 'raw'
 }
 
 /** Strict wire schema for {@link TalkHeal}. */
 export const TALK_HEAL_SCHEMA = z.object({
-  trigger: z.boolean(),
   prompt: z.string(),
-  source: z.union([z.literal('model'), z.literal('fallback')]),
+  source: z.union([z.literal('model'), z.literal('raw')]),
 })
 
-/** Which path produced the text a stop used: the model, the literal fallback, or the raw text a failed heal left. */
-export type TalkTranscriptSource = 'model' | 'fallback' | 'raw'
+/** Which path produced the text a stop used: the model, or the raw words of a segment whose cleanup fell back. */
+export type TalkTranscriptSource = 'model' | 'raw'
 
 /** Where the stop's text went. `submit` means it was handed to the composer's submit. */
 export type TalkTranscriptAction = 'draft' | 'submit' | 'none'
@@ -338,7 +335,7 @@ export interface TalkTranscriptLogResult {
 export const TALK_TRANSCRIPT_LOG_SCHEMA = z.object({
   raw: z.string(),
   cleaned: z.string(),
-  source: z.union([z.literal('model'), z.literal('fallback'), z.literal('raw')]),
+  source: z.union([z.literal('model'), z.literal('raw')]),
   action: z.union([z.literal('draft'), z.literal('submit'), z.literal('none')]),
 })
 
@@ -395,8 +392,9 @@ export const TALK_TRANSCRIBE_DESCRIPTOR = Object.freeze({
 } as const) satisfies InvocationDescriptor
 
 /**
- * The `talk/heal` invocation descriptor. The host runs the one local heal call
- * (`src/heal.ts`) because the browser cannot reach the model's loopback endpoint.
+ * The `talk/heal` invocation descriptor. The host runs the one windowed cleanup call
+ * (`healWindow` in `src/heal.ts`) because the browser cannot reach the model's loopback
+ * endpoint. The parameters are ordered: `context` first, then `text`.
  */
 export const TALK_HEAL_DESCRIPTOR = Object.freeze({
   id: 'dsh-talk#talk/heal',
@@ -404,12 +402,20 @@ export const TALK_HEAL_DESCRIPTOR = Object.freeze({
   namespace: 'talk',
   method: 'heal',
   invocation: Object.freeze({ kind: 'direct' }),
-  parameters: Object.freeze([Object.freeze({
-    name: 'rawTranscript',
-    wire: 'rawTranscript',
-    source: 'json',
-    codec: strictWire('dsh-talk/types#TalkHealRawTranscript', z.string()),
-  } satisfies InvocationDescriptor['parameters'][number])]),
+  parameters: Object.freeze([
+    Object.freeze({
+      name: 'context',
+      wire: 'context',
+      source: 'json',
+      codec: strictWire('dsh-talk/types#TalkHealContext', z.string()),
+    } satisfies InvocationDescriptor['parameters'][number]),
+    Object.freeze({
+      name: 'text',
+      wire: 'text',
+      source: 'json',
+      codec: strictWire('dsh-talk/types#TalkHealText', z.string()),
+    } satisfies InvocationDescriptor['parameters'][number]),
+  ]),
   result: strictWire('dsh-talk/types#TalkHeal', TALK_HEAL_SCHEMA),
   sourceLocation: SOURCE,
 } as const) satisfies InvocationDescriptor

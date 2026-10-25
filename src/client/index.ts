@@ -133,8 +133,8 @@ export async function apply(ctx: Context): Promise<void> {
       unwrap<TalkInterruptResult>(await talk.interrupt(), 'interrupt')
     const transcribe: TalkMicInjected['transcribe'] = async (audioData) =>
       unwrap<TalkTranscript>(await talk.transcribe(audioData), 'transcribe')
-    const heal: TalkMicInjected['heal'] = async (rawTranscript) =>
-      unwrap<TalkHeal>(await talk.heal(rawTranscript), 'heal')
+    const heal: TalkMicInjected['heal'] = async (context, text) =>
+      unwrap<TalkHeal>(await talk.heal(context, text), 'heal')
     const logTranscript: TalkMicInjected['logTranscript'] = async (entry) =>
       unwrap<TalkTranscriptLogResult>(await talk.logTranscript(entry), 'logTranscript')
     const audio: TalkMicInjected['audio'] = async (utteranceId) =>
