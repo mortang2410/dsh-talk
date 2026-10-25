@@ -832,7 +832,14 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     capture.cleaned = ''
     capture.fellBack = false
     capture.latched = false
-    if (prompt === '') return
+    if (prompt === '') {
+      // The phrase was all the prompt held: nothing is sent, but the words still reach the trail.
+      void logTranscript({ raw: spoken, cleaned: '', source, action: 'none' })
+        .catch((error: unknown) => {
+          console.warn('[dsh-talk] transcript trail write failed:', error)
+        })
+      return
+    }
     // Arm the session before the prompt starts its turn, so the host knows this turn is spoken.
     // The await is required: the arm must reach the host before the prompt does.
     if (voiceTurn !== undefined && typeof sessionIdProp === 'string' && sessionIdProp !== '') {

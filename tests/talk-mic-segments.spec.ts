@@ -442,6 +442,19 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
   })
 
+  it('a phrase that opens a segment writes its raw words to the trail with action none and an empty cleaned text', async () => {
+    // Breaks if: a phrase-only trigger leaves no trail line, or its line drops the phrase or the words after it, or names an action other than none.
+    transcriptQueue = ['that is my prompt was a phrase I once said']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual([])
+    expect(transcriptLog).toEqual([
+      { raw: 'that is my prompt was a phrase I once said', cleaned: '', source: 'model', action: 'none' },
+    ])
+  })
+
   it('stops after 120 seconds of silence and leaves the transcript in the composer unsent', async () => {
     transcriptQueue = ['first sentence', 'second sentence']
     await mountAndSettle()
@@ -1047,6 +1060,29 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(sent).toEqual([])
   })
 
+  it('a stop whose only words are the phrase, with its heal still in flight, writes action none with an empty cleaned text', async () => {
+    // Breaks if: the stop drafts or submits the phrase, the trail drops the phrase from its raw text, or the action is not none.
+    transcriptQueue = ['that is my prompt']
+    holdHeals()
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    expect(healCalls).toEqual([{ context: '', text: 'that is my prompt' }])
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    openHealGate()
+    await flush()
+    await flush()
+    expect(drafts).toEqual([])
+    expect(sent).toEqual([])
+    expect(transcriptLog).toEqual([
+      { raw: 'that is my prompt', cleaned: '', source: 'model', action: 'none' },
+    ])
+  })
+
   it('a trigger heal still in flight at the stop, with autoSubmit on, submits the text before the phrase once', async () => {
     // Review round 6, R6-1: with autoSubmit on, the stop submits the cleaned text before the phrase. The trigger
     // prompt itself is not sent, and no second heal call is made.
@@ -1130,6 +1166,60 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(transcriptLog).toEqual([
       { raw: 'write a haiku that is my prompt', cleaned: 'write a haiku', source: 'model', action: 'submit' },
     ])
+  })
+
+  it('a stop with one model segment and one raw segment records raw for the whole stop', async () => {
+    // Breaks if: a stop that used a fallback is logged as model, or the stop line drops a segment's words.
+    transcriptQueue = ['first sentence', 'second sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    healMode = 'error'
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['first sentence second sentence'])
+    expect(transcriptLog).toEqual([
+      { raw: 'first sentence second sentence', cleaned: 'first sentence second sentence', source: 'raw', action: 'draft' },
+    ])
+    expectHostOnlyFetches()
+  })
+
+  it('a trigger prompt with a raw segment records raw, and the prompt after it records model', async () => {
+    // Breaks if: the fallback leaks past the trigger into the next prompt's line, or the trigger line takes the source of a segment after it.
+    healMode = 'error'
+    transcriptQueue = ['first sentence', 'second sentence that is my prompt', 'third sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    healMode = 'model'
+    await speak(1000)
+    await advance(1000)
+    expect(sent).toEqual(['first sentence second sentence'])
+    expect(transcriptLog).toEqual([
+      { raw: 'first sentence second sentence that is my prompt', cleaned: 'first sentence second sentence', source: 'raw', action: 'submit' },
+    ])
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['third sentence'])
+    expect(transcriptLog).toEqual([
+      { raw: 'first sentence second sentence that is my prompt', cleaned: 'first sentence second sentence', source: 'raw', action: 'submit' },
+      { raw: 'third sentence', cleaned: 'third sentence', source: 'model', action: 'draft' },
+    ])
+    expectHostOnlyFetches()
   })
 
   it('a failed trail write leaves the stop untouched and writes the draft', async () => {

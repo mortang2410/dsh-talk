@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { appendTranscriptLog, transcriptLogDir, transcriptLogPath } from '../src/transcript-log.ts'
+import { TALK_TRANSCRIPT_LOG_SCHEMA, type TalkTranscriptLogEntry } from '../src/wire.ts'
 
 const dirs: string[] = []
 
@@ -68,6 +69,15 @@ describe('the transcript trail', () => {
     await appendTranscriptLog(ENTRY, { dir, now: new Date('2026-10-25T18:04:05.000Z') })
     expect((await stat(dir)).mode & 0o777).toBe(0o700)
     expect((await stat(path)).mode & 0o777).toBe(0o600)
+  })
+
+  it('the trail source is model or raw only, and the schema refuses any other value', () => {
+    // Breaks if: the schema accepts any source other than model or raw, or refuses either of those two.
+    // @ts-expect-error: only model and raw are trail sources, so the type must refuse any other value at compile time.
+    const other: TalkTranscriptLogEntry = { ...ENTRY, source: 'unknown' }
+    expect(TALK_TRANSCRIPT_LOG_SCHEMA.safeParse(other).success).toBe(false)
+    expect(TALK_TRANSCRIPT_LOG_SCHEMA.safeParse({ ...ENTRY, source: 'model' }).success).toBe(true)
+    expect(TALK_TRANSCRIPT_LOG_SCHEMA.safeParse({ ...ENTRY, source: 'raw' }).success).toBe(true)
   })
 
   it('names the file by the UTC month and defaults to the host state dir', async () => {
