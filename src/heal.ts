@@ -1,7 +1,8 @@
 /**
  * One local model call that heals a raw speech transcript and decides whether the
  * speaker ended it with the trigger phrase. When that call fails, a literal check decides
- * instead: the phrase must end the raw transcript, or the call throws.
+ * instead: the phrase must end the raw transcript, or the call throws. That check accepts
+ * the prompt spellings and the misheard "that is my problem" and "that's my problem".
  *
  * `HEAL_SYSTEM_PROMPT` is copied byte-for-byte from the fenced block under
  * "## System prompt, verbatim" in the project's `HEAL-PROMPT.md`. The byte-identity
@@ -99,8 +100,12 @@ function finalPhraseIndex(text: string, pattern: RegExp): number | null {
   return match === null ? null : match.index
 }
 
-/** The two literal trigger forms of the fallback, at the end of the transcript. */
-const FALLBACK_FINAL_PHRASE = /\bthat(?: is |'s )my prompt$/iu
+/**
+ * The literal trigger forms of the fallback, at the end of the transcript: both spellings of
+ * "prompt", plus the misheard "problem". The apostrophe-less spelling is not one of them,
+ * because the fallback decides whether to send, and a wrong send is worse than a missed one.
+ */
+const FALLBACK_FINAL_PHRASE = /\bthat(?: is |'s )my (?:prompt|problem)$/iu
 
 /**
  * The three literal forms the host check uses on a model answer: the two above plus
@@ -113,10 +118,19 @@ const FALLBACK_FINAL_PHRASE = /\bthat(?: is |'s )my prompt$/iu
  * decides whether to send EARLY, so it is wide: any literal form found away from the end is
  * evidence that the model read the transcript wrong, and the wider set catches more of those
  * without touching the variants only the model can recognise.
+ *
+ * "Problem" is in the two ending checks and in neither of the mid-transcript ones. It is the
+ * usual mishearing of "prompt", so an utterance that ends with it is the phrase and must fire:
+ * the fallback sends instead of leaving those words in the prompt, and the empty-prompt
+ * recovery keeps the speech before it. In the middle it is ordinary English ("that is my
+ * problem, so the fix goes in the parser"), so treating it as a phrase there would refuse or
+ * delete words the speaker meant. For the same reason it cannot join the veto set: a correct
+ * model trigger on a misheard variant must not be refused because ordinary speech earlier in
+ * the transcript happened to contain those words.
  */
 const HOST_LITERAL_FORM = /\bthat(?: is |'s |s )my prompt\b/iu
-const HOST_FINAL_PHRASE = /\bthat(?: is |'s |s )my prompt$/iu
-/** Every literal form anywhere, for removing a phrase the model left inside its own prompt. */
+const HOST_FINAL_PHRASE = /\bthat(?: is |'s |s )my (?:prompt|problem)$/iu
+/** Every prompt form anywhere, for removing a phrase the model left inside its own prompt. */
 const HOST_ANY_PHRASE = /\bthat(?: is |'s |s )my prompt\b[.!?,;:]*/giu
 
 /**
@@ -127,11 +141,13 @@ const HOST_ANY_PHRASE = /\bthat(?: is |'s |s )my prompt\b[.!?,;:]*/giu
  * carries `reasoning_effort: "none"`: with reasoning on, the same call spent its budget
  * on reasoning tokens and returned empty content. If the call fails for any reason (HTTP
  * error, timeout, non-JSON body, empty content, non-boolean `trigger`, non-string
- * `prompt`), the literal-phrase fallback runs on the raw transcript. The fallback decides
- * only when a literal form ends the transcript, ignoring trailing punctuation and filler words:
- * it returns `trigger: true` with every literal form stripped from what precedes it, which is
- * empty when the phrase was all that was said. A transcript with speech after the phrase makes
- * it throw; an empty prompt does not, because the caller must not send one and does not.
+ * `prompt`), the literal-phrase fallback runs on the raw transcript. It decides when
+ * "that is my prompt", "that's my prompt", "that is my problem" or "that's my problem" ends
+ * the transcript, ignoring trailing punctuation and filler words: it returns `trigger: true`
+ * with every prompt form stripped from what precedes it, which is empty when the phrase was
+ * all that was said. A mid-transcript "that is my problem" stays, because there it is ordinary
+ * speech. A transcript with speech after the phrase makes it throw; an empty prompt does not,
+ * because the caller must not send one and does not.
  *
  * When the model call answers `trigger: true`, the host checks the answer against the text
  * (defence in depth; the model still decides every other case):

@@ -884,6 +884,24 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(sent).toEqual([])
   })
 
+  it('a failed heal at the stop fires on "that is my problem", and autoSubmit sends the words before it', async () => {
+    // B5 during an outage: the literal check accepts the mishearing, so the phrase itself is
+    // not submitted as part of the prompt.
+    healMode = 'error'
+    transcriptQueue = ['one thought that is my problem']
+    await mountAndSettle({ ...SETTINGS, record: { ...SETTINGS.record, autoSubmit: true } })
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(sent).toEqual(['one thought'])
+    expect(drafts).toEqual([])
+  })
+
   it('a stop heals the text whose heal call failed during the capture', async () => {
     // B4: the heal call for the segment failed, so no answer covers its words. The stop heals them once the host answers.
     healMode = 'error'

@@ -1,7 +1,8 @@
 /**
  * Heal contract: one model call per transcript, the raw transcript logged before the
- * call, the literal-phrase fallback decides only on the two literal forms, and the
- * prompt constant is byte-identical to HEAL-PROMPT.md when DSH_TALK_HEAL_PROMPT names it.
+ * call, the literal-phrase fallback decides only on the literal forms (the prompt spellings
+ * and the misheard "problem"), and the prompt constant is byte-identical to HEAL-PROMPT.md
+ * when DSH_TALK_HEAL_PROMPT names it.
  *
  * Stubs are real loopback HTTP servers, so each request crosses the process boundary
  * the way production does. A stub replays a recorded answer; the model's own phrase
@@ -206,7 +207,7 @@ describe('request shape and ordering', () => {
   })
 })
 
-describe('fallback path: the call failed, so the two literal forms decide', () => {
+describe('fallback path: the call failed, so the literal forms decide', () => {
   // Each reply below is a failure shape. Every one must fall back, make exactly one request,
   // and never let the bad model answer reach the caller.
   // Breaks if: the failure throws instead of falling back, a second request is sent, or the
@@ -257,6 +258,9 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
     ['upper case', 'READ THE CONFIG THAT IS MY PROMPT', 'READ THE CONFIG'],
     ['every occurrence, matching the model path', 'that is my prompt and that is my prompt', 'and'],
     ['the phrase alone, leaving an empty prompt the caller must not send', 'that is my prompt', ''],
+    ['the misheard problem for prompt', 'read the config that is my problem', 'read the config'],
+    ["the misheard problem, apostrophe form", "read the config that's my problem", 'read the config'],
+    ['the misheard problem alone, leaving an empty prompt', 'that is my problem', ''],
   ])('the final literal form (%s) is stripped and what is left is sent', async (_label, raw, prompt) => {
     // Breaks if: the case-insensitive match, the sentence-mark removal, the trailing-whitespace
     // allowance, or the rule that every literal form is removed is lost. Removing every form
@@ -268,7 +272,6 @@ describe('fallback path: the call failed, so the two literal forms decide', () =
 
   it.each([
     ['misheard promt', 'read the config that is my promt'],
-    ['different word problem', 'read the config that is my problem'],
     ['different word proper', 'read the config that is my proper'],
     ['no apostrophe (not one of the two literal forms)', 'read the config thats my prompt'],
     ['prompted (word boundary)', 'read the config that is my prompted'],
@@ -426,6 +429,24 @@ describe('trailing punctuation and filler after the phrase', () => {
     expect(result).toEqual({ trigger: true, prompt: 'write a haiku about sockets', source: 'model' })
   })
 
+  it('leaves a mid-transcript "that is my problem" in the prompt, because there it is ordinary speech', async () => {
+    // Breaks if: the "problem" forms join the strip set, so words the speaker meant are deleted
+    // whenever the utterance ends with the real phrase.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "read the config, that is my problem, and then the vad"}')
+    const result = await heal('read the config, that is my problem, and then the vad that is my prompt', stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'read the config, that is my problem, and then the vad', source: 'model' })
+  })
+
+  it('does not refuse a model trigger because ordinary speech elsewhere says "that is my problem"', async () => {
+    // Breaks if: the "problem" forms join the veto set, so a correct trigger on a misheard
+    // variant at the end is refused over a phrase that was content.
+    const stub = await startStub()
+    stub.reply = answer('{"trigger": true, "prompt": "fix the parser, that is my problem"}')
+    const result = await heal('fix the parser, that is my problem, that is my promt', stub.endpoint)
+    expect(result).toEqual({ trigger: true, prompt: 'fix the parser, that is my problem', source: 'model' })
+  })
+
   it('fires on a phrase followed by two marks, as a recogniser may produce', async () => {
     const stub = await startStub()
     stub.reply = answer('boom')
@@ -487,6 +508,8 @@ describe('a model trigger with nothing to send: the host form set', () => {
     ['that is my prompt', 'write a haiku that is my prompt'],
     ['thats my prompt', 'write a haiku thats my prompt'],
     ['that is my prompt with a comma', 'write a haiku that is my prompt,'],
+    ['that is my problem', 'write a haiku that is my problem'],
+    ["that's my problem", "write a haiku that's my problem"],
   ])('recovers the speech before %s when the model returns an empty prompt', async (_label, raw) => {
     // Breaks if: the recovery uses the fallback's narrower form set, so "thats my prompt" loses
     // the words before it. The model already recognised the phrase, so the wider set applies.
