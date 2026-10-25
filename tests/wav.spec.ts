@@ -1,13 +1,12 @@
 /**
  * The 16 kHz mono WAV encoder the microphone sends to the transcription
- * engine: header fields, sample round trip and clamping, channel mixing, and
- * the decode wiring (the decoder is asked for a 16 kHz context).
+ * engine: header fields, sample round trip and clamping, and channel mixing.
  *
  * @module dsh-talk/test/wav.spec
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createDecoder, encodeWav16kMono, mixToMono, recordingToWav16kMono, STT_SAMPLE_RATE } from '../src/client/wav.ts'
+import { describe, expect, it } from 'vitest'
+import { encodeWav16kMono, mixToMono, STT_SAMPLE_RATE } from '../src/client/wav.ts'
 
 function header(bytes: Uint8Array): DataView {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -69,43 +68,5 @@ describe('mixToMono', () => {
     const mono = new Float32Array([0.25, -0.25])
     expect(mixToMono([mono])).toBe(mono)
     expect(mixToMono([]).length).toBe(0)
-  })
-})
-
-describe('recordingToWav16kMono', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('decodes, mixes stereo to mono, and writes a 16 kHz WAV', async () => {
-    const decoder = {
-      decodeAudioData: async (_data: ArrayBuffer) => ({
-        numberOfChannels: 2,
-        getChannelData: (channel: number) => (channel === 0 ? new Float32Array([1, -1]) : new Float32Array([0, 1])),
-      }),
-    }
-    const bytes = await recordingToWav16kMono(new ArrayBuffer(8), decoder)
-    const view = header(bytes)
-    expect(view.getUint32(24, true)).toBe(16000)
-    expect(view.getUint16(22, true)).toBe(1)
-    expect([view.getInt16(44, true), view.getInt16(46, true)]).toEqual([16384, 0])
-  })
-
-  it('rejects when the browser has no decoder', async () => {
-    await expect(recordingToWav16kMono(new ArrayBuffer(8), undefined)).rejects.toThrow('OfflineAudioContext is unavailable')
-  })
-
-  it('asks the browser for a one-channel 16 kHz context', () => {
-    const calls: number[][] = []
-    vi.stubGlobal('OfflineAudioContext', class {
-      constructor(...args: number[]) {
-        calls.push(args)
-      }
-      decodeAudioData(): Promise<never> {
-        return Promise.reject(new Error('unused'))
-      }
-    })
-    expect(createDecoder()).toBeDefined()
-    expect(calls).toEqual([[1, 1, 16000]])
   })
 })

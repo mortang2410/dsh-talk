@@ -3,26 +3,13 @@
  * hands over mono samples; the segmenter resamples each segment to 16 kHz, and
  * encodeWav16kMono writes it as 16-bit PCM WAV. No browser container or codec is
  * involved, because the transcription route refuses browser containers (WebM/Opus
- * in Chrome and Firefox, MP4 in Safari). recordingToWav16kMono and createDecoder
- * decode a MediaRecorder recording; the microphone no longer uses them. Only
- * createDecoder touches a browser API; the rest is pure.
+ * in Chrome and Firefox, MP4 in Safari). The module is pure: it touches no browser API.
  *
  * @module dsh-talk/client/wav
  */
 
 /** Sample rate of every WAV this client sends. The transcription route takes 16 kHz. */
 export const STT_SAMPLE_RATE = 16000
-
-/** The decoded buffer fields this module reads (an AudioBuffer subset). */
-export interface DecodedAudioLike {
-  readonly numberOfChannels: number
-  getChannelData(channel: number): Float32Array
-}
-
-/** The OfflineAudioContext face used to decode (its decodeAudioData resamples to the context rate). */
-export interface OfflineDecoderLike {
-  decodeAudioData(data: ArrayBuffer): Promise<DecodedAudioLike>
-}
 
 /**
  * Average every channel into one mono channel. A single channel is returned as is.
@@ -80,39 +67,4 @@ export function encodeWav16kMono(samples: Float32Array): Uint8Array {
     view.setInt16(44 + index * 2, value < 0 ? Math.round(value * 0x8000) : Math.round(value * 0x7fff), true)
   }
   return out
-}
-
-/**
- * The browser's decoder: an OfflineAudioContext with one channel at 16 kHz.
- * Its decodeAudioData resamples the decoded audio to the context's rate.
- *
- * @returns the decoder, or undefined when the browser has no OfflineAudioContext.
- */
-export function createDecoder(): OfflineDecoderLike | undefined {
-  const Ctor = (globalThis as unknown as {
-    OfflineAudioContext?: new (channels: number, length: number, sampleRate: number) => OfflineDecoderLike
-  }).OfflineAudioContext
-  if (Ctor === undefined) return undefined
-  return new Ctor(1, 1, STT_SAMPLE_RATE)
-}
-
-/**
- * Turn one recording (any container the browser decodes) into 16 kHz mono WAV bytes.
- *
- * @param recording - the MediaRecorder output bytes.
- * @param decoder - the 16 kHz decoder; defaults to the browser's.
- * @returns the WAV file bytes.
- * @throws when no decoder exists or the browser cannot decode the bytes.
- */
-export async function recordingToWav16kMono(
-  recording: ArrayBuffer,
-  decoder: OfflineDecoderLike | undefined = createDecoder(),
-): Promise<Uint8Array> {
-  if (decoder === undefined) throw new Error('OfflineAudioContext is unavailable in this browser')
-  const decoded = await decoder.decodeAudioData(recording)
-  const channels: Float32Array[] = []
-  for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-    channels.push(decoded.getChannelData(channel))
-  }
-  return encodeWav16kMono(mixToMono(channels))
 }
