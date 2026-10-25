@@ -165,6 +165,13 @@ const TICK_MS = 500
  */
 const FLUSH_REPLY_TIMEOUT_MS = 500
 
+/**
+ * How a segment is transcribed: at most TRANSCRIBE_ATTEMPTS calls in all, TRANSCRIBE_RETRY_MS apart.
+ * One failed call does not lose the segment's words; only the last failure does.
+ */
+const TRANSCRIBE_ATTEMPTS = 3
+const TRANSCRIBE_RETRY_MS = 1000
+
 /** How long a first stop press stays armed: the built-in Escape first-press window (stopSequenceMs, 500 ms by default). */
 const ARM_WINDOW_MS = 500
 
@@ -712,13 +719,23 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   // nothing. An unmounted capture keeps nothing from its late segments.
   const processSegment = async (capture: SegmentedCapture, samples: Float32Array): Promise<void> => {
     if (capture.abandoned) return
-    const wav = encodeWav16kMono(samples)
-    let raw: string
-    try {
-      raw = (await transcribe(bytesToBase64(wav))).text
-    } catch (error) {
-      // The segment's audio is not kept for a retry, so its words are lost. The capture stays open.
-      setMic(foldMic(micRef.current, { kind: 'failed', message: `transcription failed, so this segment's words are lost: ${detailOf(error)}` }))
+    const body = bytesToBase64(encodeWav16kMono(samples))
+    let raw: string | null = null
+    let lastError: unknown = null
+    // The segment's audio is kept for the retries (up to TRANSCRIBE_ATTEMPTS calls, TRANSCRIBE_RETRY_MS apart).
+    for (let attempt = 1; attempt <= TRANSCRIBE_ATTEMPTS; attempt += 1) {
+      if (attempt > 1) await new Promise<void>(resolve => setTimeout(resolve, TRANSCRIBE_RETRY_MS))
+      if (capture.abandoned) return
+      try {
+        raw = (await transcribe(body)).text
+        break
+      } catch (error) {
+        lastError = error
+      }
+    }
+    if (raw === null) {
+      // Every call failed, so the segment's words are lost and named. The capture stays open.
+      setMic(foldMic(micRef.current, { kind: 'failed', message: `transcription failed, so this segment's words are lost: ${detailOf(lastError)}` }))
       return
     }
     if (capture.abandoned) return

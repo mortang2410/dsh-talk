@@ -286,6 +286,14 @@ async function startCapture(): Promise<void> {
   await flush()
 }
 
+/** Wait real time: the transcription retry wait uses setTimeout, which this file does not fake. */
+async function waitRealMs(ms: number): Promise<void> {
+  await act(async () => {
+    await new Promise<void>(resolve => setTimeout(resolve, ms))
+  })
+  await flush()
+}
+
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
@@ -746,13 +754,16 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
   })
 
   it('a transcription failure keeps the capture open, shows the error, and later words still reach the draft', async () => {
-    // Item 6: the failed segment's words are lost and named; the capture stays open.
-    transcribeFailures = 1
+    // Item 6: the failed segment's words are lost and named; the capture stays open. All three
+    // attempts fail here; the two retries each wait 1 s in real time.
+    transcribeFailures = 3
     transcriptQueue = ['second sentence']
     await mountAndSettle()
     await startCapture()
     await speak(1000)
     await advance(1000)
+    await waitRealMs(2500)
+    expect(transcribed).toHaveLength(3)
     expect(recording()).toBe(true)
     expect(errorText()).toBe("transcription failed, so this segment's words are lost: engine down")
     expect(sent).toEqual([])
@@ -764,6 +775,25 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     })
     await flush()
     expect(drafts).toEqual(['second sentence'])
+  })
+
+  it('a transcription that fails once and then succeeds shows no error, and its words reach the draft', async () => {
+    // B3: the first attempt fails, the retry (1 s later, real time) succeeds, so the segment is not lost.
+    transcribeFailures = 1
+    transcriptQueue = ['first sentence']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await waitRealMs(1500)
+    expect(transcribed).toHaveLength(2)
+    expect(errorText()).toBeNull()
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    expect(drafts).toEqual(['first sentence'])
+    expect(sent).toEqual([])
   })
 
   it('a stop writes the cleaned text, not the raw transcript, when the last heal call did not fire', async () => {
