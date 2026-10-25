@@ -207,10 +207,9 @@ function filterTableFor(fromRate: number): FilterTable {
 }
 
 /**
- * The open segment's audio at the input rate, with its 16 kHz output built as the blocks arrive (above 16 kHz;
- * at or below 16 kHz the whole input is converted at close).
- * `raw` holds the input from absolute index `rawStart` on; input that no later output reads is
- * dropped. `chunks` hold the 16 kHz samples that are final so far, `outLength` of them. `queued`
+ * The open segment's audio at the input rate, with its 16 kHz output built as the blocks arrive.
+ * `raw` holds the input from absolute index `rawStart` on (not used at 16 kHz); input that no later
+ * output reads is dropped. `chunks` hold the 16 kHz samples that are final so far, `outLength` of them. `queued`
  * holds blocks that are not in `raw` yet (see queueStt).
  */
 interface SttStream {
@@ -296,10 +295,48 @@ function emitStt(stream: SttStream, final: boolean): void {
   }
 }
 
-/** Feed one block of input at the segment's rate. Above 16 kHz, the outputs that are ready are built now. */
+/**
+ * Add the 16 kHz outputs that are final, for input below 16 kHz. Each output interpolates two input
+ * samples in the same order as the one-shot conversion, so the samples match it exactly. Without
+ * `final`, an output waits until its second sample has arrived. With `final`, the input ends at its
+ * last sample, and that sample repeats.
+ */
+function emitLinear(stream: SttStream, final: boolean): void {
+  const ratio = stream.fromRate / STT_SAMPLE_RATE
+  const raw = stream.raw
+  const origin = stream.rawStart
+  const end = origin + stream.rawLength
+  const limit = Math.floor(end / ratio)
+  for (let index = stream.outLength; index < limit; index += 1) {
+    const position = index * ratio
+    const low = Math.floor(position)
+    if (!final && low + 1 >= end) break
+    const fraction = position - low
+    const first = low < end ? raw[low - origin]! : 0
+    const second = low + 1 < end ? raw[low + 1 - origin]! : first
+    appendOut(stream, first + (second - first) * fraction)
+  }
+  // The next output reads input from floor(outLength * ratio) on, so anything before that can go.
+  const drop = Math.floor(stream.outLength * ratio) - origin
+  if (drop > 0) {
+    raw.copyWithin(0, drop, stream.rawLength)
+    stream.rawLength -= drop
+    stream.rawStart += drop
+  }
+}
+
+/**
+ * Feed one block of input at the segment's rate. The outputs that are ready are built now. At 16 kHz
+ * the input already is the output, so its samples go straight to the output chunks.
+ */
 function pushSttBlock(stream: SttStream, block: Float32Array): void {
+  if (stream.fromRate === STT_SAMPLE_RATE) {
+    for (let index = 0; index < block.length; index += 1) appendOut(stream, block[index]!)
+    return
+  }
   appendRaw(stream, block)
   if (stream.fromRate > STT_SAMPLE_RATE) emitStt(stream, false)
+  else emitLinear(stream, false)
 }
 
 /** Blocks pushed into an open stream per feed call. Above 16 kHz, one block costs about 0.16 ms in Node at 96 kHz, so this keeps each call short. */
@@ -320,39 +357,20 @@ function queueStt(stream: SttStream, block: Float32Array): void {
 /** Finish a conversion: the 16 kHz samples for all the input, with the last outputs repeating the final sample. */
 function finishStt(stream: SttStream): Float32Array {
   while (stream.queued.length > 0) pushSttBlock(stream, stream.queued.shift()!)
-  if (stream.fromRate > STT_SAMPLE_RATE) {
-    emitStt(stream, true)
-    return joinOut(stream)
-  }
-  return toSttRate(stream.raw.slice(0, stream.rawLength), stream.fromRate)
+  if (stream.fromRate > STT_SAMPLE_RATE) emitStt(stream, true)
+  else if (stream.fromRate < STT_SAMPLE_RATE) emitLinear(stream, true)
+  return joinOut(stream)
 }
 
 /**
  * Convert mono samples to the STT rate. Above 16 kHz the samples are low-passed first, so content
  * above the new 8 kHz limit cannot fold back into the speech band, and then read at the new rate.
- * Edge samples are repeated past each end. Input at or below 16 kHz is linearly interpolated,
- * which creates no alias. Converting a segment block by block gives the same samples as this.
+ * Edge samples are repeated past each end. Input below 16 kHz is linearly interpolated, which
+ * creates no alias. Converting a segment block by block gives the same samples as this.
  */
 export function toSttRate(samples: Float32Array, fromRate: number): Float32Array {
   if (fromRate === STT_SAMPLE_RATE) return samples
-  if (fromRate < STT_SAMPLE_RATE) return interpolateToSttRate(samples, fromRate)
   const stream = createSttStream(fromRate)
   pushSttBlock(stream, samples)
   return finishStt(stream)
-}
-
-/** Linear interpolation for input below 16 kHz. Upsampling creates no alias. */
-function interpolateToSttRate(samples: Float32Array, fromRate: number): Float32Array {
-  const ratio = fromRate / STT_SAMPLE_RATE
-  const length = Math.floor(samples.length / ratio)
-  const out = new Float32Array(length)
-  for (let index = 0; index < length; index += 1) {
-    const position = index * ratio
-    const low = Math.floor(position)
-    const fraction = position - low
-    const first = samples[low] ?? 0
-    const second = samples[low + 1] ?? first
-    out[index] = first + (second - first) * fraction
-  }
-  return out
 }

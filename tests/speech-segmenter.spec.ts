@@ -77,6 +77,31 @@ function oneShotToSttRate(samples: Float32Array, fromRate: number): Float32Array
 }
 
 /**
+ * The one-shot linear conversion from before streaming (commit cdffc2a), for input below 16 kHz.
+ * Like oneShotToSttRate, it shares no code with the segmenter.
+ */
+function oneShotLinearToSttRate(samples: Float32Array, fromRate: number): Float32Array {
+  const ratio = fromRate / 16000
+  const length = Math.floor(samples.length / ratio)
+  const out = new Float32Array(length)
+  for (let index = 0; index < length; index += 1) {
+    const position = index * ratio
+    const low = Math.floor(position)
+    const fraction = position - low
+    const first = samples[low] ?? 0
+    const second = samples[low + 1] ?? first
+    out[index] = first + (second - first) * fraction
+  }
+  return out
+}
+
+/** The expected 16 kHz samples for any input rate: the one-shot conversion, or the input itself at 16 kHz. */
+function oneShotConversion(samples: Float32Array, fromRate: number): Float32Array {
+  if (fromRate === 16000) return samples
+  return fromRate < 16000 ? oneShotLinearToSttRate(samples, fromRate) : oneShotToSttRate(samples, fromRate)
+}
+
+/**
  * Exact equality. On a mismatch the message names the first differing sample: a plain toEqual on
  * arrays this long builds a full diff, which takes minutes.
  */
@@ -225,6 +250,11 @@ describe('toSttRate', () => {
     expect(toSttRate(samples, 16000)).toBe(samples)
   })
 
+  it('interpolates 8 kHz input linearly, and repeats the last sample past its end', () => {
+    // Two samples at 8 kHz are four at 16 kHz: the first, the midpoint, the second, then the second again.
+    expect(Array.from(toSttRate(Float32Array.of(0, 1), 8000))).toEqual([0, 0.5, 1, 1])
+  })
+
   // Review round 1 F3. Measured on the middle of each output, away from the edges where the filter settles.
   function toneOf(hz: number, rate: number, seconds: number): Float32Array {
     return Float32Array.from({ length: Math.round(rate * seconds) }, (_, n) => Math.sin((2 * Math.PI * hz * n) / rate))
@@ -260,7 +290,7 @@ describe('conversion while a segment is open', () => {
     expect(flushSegment(seg)!.length).toBe(160000)
   })
 
-  it.each([44100, 48000, 96000])('gives the same samples as the one-shot conversion of all the audio, for any block sizes, past the first output chunk, at %i Hz', rate => {
+  it.each([8000, 11025, 16000, 44100, 48000, 96000])('gives the same samples as the one-shot conversion of all the audio, for any block sizes, past the first output chunk, at %i Hz', rate => {
     // Deterministic pseudo-random audio and block sizes, so a failure reproduces. The threshold is 0,
     // so every block is speech and the one open segment holds all of the audio.
     let state = 12345
@@ -278,7 +308,7 @@ describe('conversion while a segment is open', () => {
       feedBlock(seg, audio.slice(at, at + size))
       at += size
     }
-    expectSameSamples(flushSegment(seg), oneShotToSttRate(audio, rate))
+    expectSameSamples(flushSegment(seg), oneShotConversion(audio, rate))
   })
 
   it.each([44100, 48000])('a segment that starts with a pre-roll gives the same samples as the one-shot conversion of the pre-roll and the speech, at %i Hz', rate => {
