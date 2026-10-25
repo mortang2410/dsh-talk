@@ -21,7 +21,7 @@
  * text would match on one call and miss on the next.
  */
 export const TRIGGER_PHRASE =
-  /(?<![\p{L}\p{N}_])that(?: is |'s |s )my (?:prompted|prompt|promp|promt|problem)/iu
+  /(?<![\p{L}\p{N}_])that(?: is |'s |s )my (?:prompted|prompt|promp|promt|problem)(?![\p{L}\p{N}_])/iu
 
 /**
  * Characters removed from the end of a prompt: whitespace, plus the comma,
