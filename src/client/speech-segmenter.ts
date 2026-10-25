@@ -36,8 +36,10 @@ export interface Segmenter {
    */
   history: Float32Array[]
   historySamples: number
-  /** Blocks of the open segment, or null between segments. */
-  open: Float32Array[] | null
+  /** The open segment's audio, converted to the STT rate as its blocks arrive, or null between segments. */
+  open: SttStream | null
+  /** 16 kHz samples already converted for the open segment (input above 16 kHz). Closing converts only the rest. */
+  convertedSamples: number
   /** Silence, in milliseconds, inside the open segment. */
   pauseMs: number
   /** Silence, in milliseconds, since the last speech block (the 120-second timeout). */
@@ -60,6 +62,7 @@ export function createSegmenter(options: SegmenterOptions): Segmenter {
     history: [],
     historySamples: 0,
     open: null,
+    convertedSamples: 0,
     pauseMs: 0,
     idleMs: 0,
     segments: 0,
@@ -68,17 +71,6 @@ export function createSegmenter(options: SegmenterOptions): Segmenter {
 
 function preRollSamples(seg: Segmenter): number {
   return Math.round((PRE_ROLL_MS / 1000) * seg.sampleRate)
-}
-
-function concatBlocks(blocks: Float32Array[]): Float32Array {
-  const total = blocks.reduce((sum, block) => sum + block.length, 0)
-  const out = new Float32Array(total)
-  let offset = 0
-  for (const block of blocks) {
-    out.set(block, offset)
-    offset += block.length
-  }
-  return out
 }
 
 /**
@@ -103,12 +95,12 @@ function pushHistory(seg: Segmenter, block: Float32Array): void {
   }
 }
 
-/** Close the open segment and return its audio at the STT rate. */
-function closeOpen(seg: Segmenter): Float32Array {
-  const blocks = seg.open ?? []
+/** Close the open segment and return its audio at the STT rate. Only the samples not yet converted are converted here. */
+function closeOpen(seg: Segmenter, stream: SttStream): Float32Array {
   seg.open = null
   seg.pauseMs = 0
-  return toSttRate(concatBlocks(blocks), seg.sampleRate)
+  seg.convertedSamples = 0
+  return finishStt(stream)
 }
 
 /**
@@ -124,21 +116,27 @@ export function feedBlock(seg: Segmenter, block: Float32Array): SegmenterEvent[]
   seg.idleMs = advanceSilence(seg.idleMs, blockMs, speech)
   const events: SegmenterEvent[] = []
   if (speech) {
-    if (seg.open === null) {
-      seg.open = [...seg.history, block]
+    let stream: SttStream | null = seg.open
+    if (stream === null) {
+      // The onset starts with the history: the newest PRE_ROLL_MS of non-speech audio.
+      stream = createSttStream(seg.sampleRate)
+      for (const earlier of seg.history) pushSttBlock(stream, earlier)
+      seg.open = stream
       seg.segments += 1
-    } else {
-      seg.open.push(block)
     }
+    pushSttBlock(stream, block)
+    seg.convertedSamples = stream.outLength
     seg.history = []
     seg.historySamples = 0
     seg.pauseMs = 0
   } else {
     pushHistory(seg, block)
-    if (seg.open !== null) {
-      seg.open.push(block)
+    const stream = seg.open
+    if (stream !== null) {
+      pushSttBlock(stream, block)
+      seg.convertedSamples = stream.outLength
       seg.pauseMs = advanceSilence(seg.pauseMs, blockMs, false)
-      if (silenceTrips(seg.pauseMs, seg.silenceMs)) events.push({ kind: 'segment', samples: closeOpen(seg) })
+      if (silenceTrips(seg.pauseMs, seg.silenceMs)) events.push({ kind: 'segment', samples: closeOpen(seg, stream) })
     }
   }
   if (seg.segments > 0 && silenceTrips(seg.idleMs, CAPTURE_SILENCE_TIMEOUT_MS)) events.push({ kind: 'timeout' })
@@ -147,7 +145,8 @@ export function feedBlock(seg: Segmenter, block: Float32Array): SegmenterEvent[]
 
 /** Close the open segment, if any, and return its audio at the STT rate. Used when the capture stops. */
 export function flushSegment(seg: Segmenter): Float32Array | null {
-  return seg.open === null ? null : closeOpen(seg)
+  const stream = seg.open
+  return stream === null ? null : closeOpen(seg, stream)
 }
 
 /** The anti-alias low-pass cuts above this frequency, in hertz: below the 8 kHz limit of 16 kHz audio. */
@@ -204,29 +203,57 @@ function filterTableFor(fromRate: number): FilterTable {
 }
 
 /**
- * Convert mono samples to the STT rate. Above 16 kHz the samples are low-passed first, so content
- * above the new 8 kHz limit cannot fold back into the speech band, and then read at the new rate.
- * Edge samples are repeated past each end. Input at or below 16 kHz is linearly interpolated,
- * which creates no alias.
+ * The open segment's audio at the input rate, with its 16 kHz output built as the blocks arrive.
+ * `raw` holds the input from absolute index `rawStart` on; input that no later output reads is
+ * dropped. `out` holds the 16 kHz samples that are final so far.
  */
-export function toSttRate(samples: Float32Array, fromRate: number): Float32Array {
-  if (fromRate === STT_SAMPLE_RATE) return samples
-  const ratio = fromRate / STT_SAMPLE_RATE
-  const length = Math.floor(samples.length / ratio)
-  const out = new Float32Array(length)
-  if (ratio < 1) {
-    for (let index = 0; index < length; index += 1) {
-      const position = index * ratio
-      const low = Math.floor(position)
-      const fraction = position - low
-      const first = samples[low] ?? 0
-      const second = samples[low + 1] ?? first
-      out[index] = first + (second - first) * fraction
-    }
-    return out
+interface SttStream {
+  readonly fromRate: number
+  raw: Float32Array
+  rawStart: number
+  rawLength: number
+  out: Float32Array
+  outLength: number
+}
+
+function createSttStream(fromRate: number): SttStream {
+  return { fromRate, raw: new Float32Array(0), rawStart: 0, rawLength: 0, out: new Float32Array(0), outLength: 0 }
+}
+
+function appendRaw(stream: SttStream, block: Float32Array): void {
+  const needed = stream.rawLength + block.length
+  if (needed > stream.raw.length) {
+    const grown = new Float32Array(Math.max(needed, 2 * stream.raw.length, 4096))
+    grown.set(stream.raw.subarray(0, stream.rawLength))
+    stream.raw = grown
   }
-  const { count, half, taps } = filterTableFor(fromRate)
-  for (let index = 0; index < length; index += 1) {
+  stream.raw.set(block, stream.rawLength)
+  stream.rawLength += block.length
+}
+
+function appendOut(stream: SttStream, value: number): void {
+  if (stream.outLength === stream.out.length) {
+    const grown = new Float32Array(Math.max(4096, 2 * stream.out.length))
+    grown.set(stream.out)
+    stream.out = grown
+  }
+  stream.out[stream.outLength] = value
+  stream.outLength += 1
+}
+
+/**
+ * Add the 16 kHz outputs that are final. Without `final`, an output waits until the input it reads
+ * has arrived. With `final`, the input ends at its last sample, and the last outputs repeat that
+ * sample, as the one-shot conversion always did. Only input above 16 kHz is filtered here.
+ */
+function emitStt(stream: SttStream, final: boolean): void {
+  const ratio = stream.fromRate / STT_SAMPLE_RATE
+  const { count, half, taps } = filterTableFor(stream.fromRate)
+  const raw = stream.raw
+  const origin = stream.rawStart
+  const end = origin + stream.rawLength
+  const limit = Math.floor(end / ratio)
+  for (let index = stream.outLength; index < limit; index += 1) {
     const position = index * ratio
     let base = Math.floor(position)
     let phase = Math.round((position - base) * FILTER_PHASES)
@@ -234,13 +261,65 @@ export function toSttRate(samples: Float32Array, fromRate: number): Float32Array
       base += 1
       phase = 0
     }
+    if (!final && base + half >= end) break
     const row = phase * count
     let sum = 0
     for (let k = 0; k < count; k += 1) {
-      const at = Math.min(Math.max(base - half + k, 0), samples.length - 1)
-      sum += taps[row + k]! * samples[at]!
+      const at = Math.min(Math.max(base - half + k, 0), end - 1)
+      sum += taps[row + k]! * raw[at - origin]!
     }
-    out[index] = sum
+    appendOut(stream, sum)
+  }
+  // The next output reads input from floor(outLength * ratio) - half on, so anything before that can go.
+  const drop = Math.floor(stream.outLength * ratio) - half - origin
+  if (drop > 0) {
+    stream.raw.copyWithin(0, drop, stream.rawLength)
+    stream.rawLength -= drop
+    stream.rawStart += drop
+  }
+}
+
+/** Feed one block of input at the segment's rate. Above 16 kHz, the outputs that are ready are built now. */
+function pushSttBlock(stream: SttStream, block: Float32Array): void {
+  appendRaw(stream, block)
+  if (stream.fromRate > STT_SAMPLE_RATE) emitStt(stream, false)
+}
+
+/** Finish a conversion: the 16 kHz samples for all the input, with the last outputs repeating the final sample. */
+function finishStt(stream: SttStream): Float32Array {
+  if (stream.fromRate > STT_SAMPLE_RATE) {
+    emitStt(stream, true)
+    return stream.out.slice(0, stream.outLength)
+  }
+  return toSttRate(stream.raw.slice(0, stream.rawLength), stream.fromRate)
+}
+
+/**
+ * Convert mono samples to the STT rate. Above 16 kHz the samples are low-passed first, so content
+ * above the new 8 kHz limit cannot fold back into the speech band, and then read at the new rate.
+ * Edge samples are repeated past each end. Input at or below 16 kHz is linearly interpolated,
+ * which creates no alias. Converting a segment block by block gives the same samples as this.
+ */
+export function toSttRate(samples: Float32Array, fromRate: number): Float32Array {
+  if (fromRate === STT_SAMPLE_RATE) return samples
+  if (fromRate < STT_SAMPLE_RATE) return interpolateToSttRate(samples, fromRate)
+  const stream = createSttStream(fromRate)
+  pushSttBlock(stream, samples)
+  return finishStt(stream)
+}
+
+/** Linear interpolation for input below 16 kHz. Upsampling creates no alias. */
+function interpolateToSttRate(samples: Float32Array, fromRate: number): Float32Array {
+  const ratio = fromRate / STT_SAMPLE_RATE
+  const length = Math.floor(samples.length / ratio)
+  const out = new Float32Array(length)
+  for (let index = 0; index < length; index += 1) {
+    const position = index * ratio
+    const low = Math.floor(position)
+    const fraction = position - low
+    const first = samples[low] ?? 0
+    const second = samples[low + 1] ?? first
+    out[index] = first + (second - first) * fraction
   }
   return out
 }

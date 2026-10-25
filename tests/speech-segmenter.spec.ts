@@ -189,3 +189,35 @@ describe('toSttRate', () => {
     expect(level).toBeLessThan(0.72)
   })
 })
+
+describe('conversion while a segment is open', () => {
+  it('converts the open segment as its blocks arrive, so closing it does not convert the whole segment', () => {
+    // Review round 2 R2-1. The conversion used to run only at close: about 0.9 s on the page's main
+    // thread for 120 s of speech at 48 kHz. 10 s of speech in 20 ms blocks is 480000 samples at 48 kHz,
+    // which gives 160000 samples at 16 kHz; 264 + 1 taps reach 132 input samples ahead, so 159956 are final.
+    const seg = newSegmenter()
+    feedAll(seg, [blocks(10000, 0.2)])
+    expect(seg.convertedSamples).toBeGreaterThan(159900)
+    expect(flushSegment(seg)!.length).toBe(160000)
+  })
+
+  it.each([44100, 48000])('gives the same samples as one conversion of all the audio, for any block sizes, at %i Hz', rate => {
+    // Deterministic pseudo-random audio and block sizes, so a failure reproduces. The threshold is 0,
+    // so every block is speech and the one open segment holds all of the audio.
+    let state = 12345
+    const random = (): number => {
+      state = (state * 1103515245 + 12345) >>> 0
+      return state / 4294967296
+    }
+    const total = rate * 3
+    const audio = Float32Array.from({ length: total }, () => random() * 2 - 1)
+    const seg = createSegmenter({ sampleRate: rate, threshold: 0, silenceMs: 1500 })
+    let at = 0
+    while (at < total) {
+      const size = Math.min(total - at, 1 + Math.floor(random() * 2000))
+      feedBlock(seg, audio.slice(at, at + size))
+      at += size
+    }
+    expect(flushSegment(seg)).toEqual(toSttRate(audio, rate))
+  })
+})
