@@ -48,7 +48,10 @@ export async function appendTranscriptLog(
   const handle = await open(path, 'a', 0o600)
   try {
     await handle.chmod(0o600)
-    await handle.write(`${line}\n`)
+    // writeFile loops until the whole buffer is written and rejects when it cannot, so a short
+    // or failed write is an error. FileHandle.write() would instead return the byte count, and a
+    // short write (a file-size limit, a full disk) would leave half a JSON line and report success.
+    await handle.writeFile(`${line}\n`)
   } finally {
     await handle.close()
   }
