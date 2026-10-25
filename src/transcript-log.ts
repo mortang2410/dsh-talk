@@ -9,7 +9,7 @@
  * @module dsh-talk/transcript-log
  */
 
-import { appendFile, mkdir } from 'node:fs/promises'
+import { chmod, mkdir, open } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { TalkTranscriptLogEntry } from './wire.ts'
@@ -40,6 +40,17 @@ export async function appendTranscriptLog(
   const path = transcriptLogPath(now, dir)
   const line = JSON.stringify({ ts: now.toISOString(), ...entry })
   await mkdir(dir, { recursive: true, mode: 0o700 })
-  await appendFile(path, `${line}\n`, { mode: 0o600 })
+  // The mode options apply only when the path is created, and this trail holds raw speech.
+  // Tighten an existing directory first, then open the file, tighten the open descriptor, and
+  // only then write: a file that already exists with a wide mode never holds the new line
+  // under that mode, even for a moment.
+  await chmod(dir, 0o700)
+  const handle = await open(path, 'a', 0o600)
+  try {
+    await handle.chmod(0o600)
+    await handle.write(`${line}\n`)
+  } finally {
+    await handle.close()
+  }
   return path
 }

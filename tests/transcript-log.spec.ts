@@ -6,7 +6,7 @@
  * @module dsh-talk/test/transcript-log
  */
 
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -52,6 +52,20 @@ describe('the transcript trail', () => {
     // Breaks if: the trail is world-readable on a shared host.
     const dir = join(await tempDir(), 'nested', 'dsh-talk')
     const path = await appendTranscriptLog(ENTRY, { dir, now: new Date('2026-10-25T00:00:00.000Z') })
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+  })
+
+  it('tightens the modes of an existing directory and file before appending', async () => {
+    // Breaks if: a pre-created 0755 dir and 0644 file let another local user read the raw words.
+    // The mode options only apply at creation, so an existing path keeps whatever it had.
+    const dir = join(await tempDir(), 'dsh-talk')
+    await mkdir(dir, { recursive: true })
+    await chmod(dir, 0o755)
+    const path = join(dir, 'transcripts-2026-10.jsonl')
+    await writeFile(path, `${JSON.stringify({ ts: '2026-09-30T00:00:00.000Z', ...ENTRY })}\n`)
+    await chmod(path, 0o644)
+    await appendTranscriptLog(ENTRY, { dir, now: new Date('2026-10-25T18:04:05.000Z') })
     expect((await stat(dir)).mode & 0o777).toBe(0o700)
     expect((await stat(path)).mode & 0o777).toBe(0o600)
   })
