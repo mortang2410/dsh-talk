@@ -1,8 +1,9 @@
 /**
  * The composer microphone button: when the host resolved the `web` STT engine,
  * transcribe with the browser's Web Speech API (interim results included);
- * otherwise record speech segments with MediaRecorder (voice-activity detection is
- * always on), convert each segment to 16 kHz mono WAV (wav.ts), and send it through
+ * otherwise capture the microphone through an AudioWorklet (capture-worklet.ts), cut
+ * speech segments with the pure segmenter (speech-segmenter.ts, pre-roll included),
+ * convert each segment to 16 kHz mono WAV (wav.ts), and send it through
  * the host's `talk/transcribe` to the local engine.
  * Either way the result fills the draft (or sends directly when auto-submit is
  * on), and play each new utterance of
@@ -18,17 +19,16 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '../projection.ts'
 import { foldMic, initMic, planBargeIn, planStopPress, stopControlVisible, type MicViewModel } from './present.ts'
 import {
-  advanceSilence,
   advanceSpeechRun,
-  CAPTURE_SILENCE_TIMEOUT_MS,
   isSpeechFrame,
   LISTENER_CONSECUTIVE_FRAMES,
   LISTENER_ONSET_MS,
   LISTENER_FLOOR,
   LISTENER_TICK_MS,
   rmsOf,
-  silenceTrips,
 } from './vad.ts'
+import { CAPTURE_WORKLET_NAME, CAPTURE_WORKLET_SOURCE } from './capture-worklet.ts'
+import { createSegmenter, feedBlock, flushSegment, type Segmenter } from './speech-segmenter.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import {
   CEILING_MS_PER_CHAR,
@@ -39,7 +39,7 @@ import {
   SPEAKING_POLL_MS,
   startSpeechPoll,
 } from './speechPoll.ts'
-import { recordingToWav16kMono } from './wav.ts'
+import { encodeWav16kMono } from './wav.ts'
 import type { TalkAudio, TalkHeal, TalkInterruptResult, TalkLatest, TalkStatus, TalkTranscript, TalkVoiceTurn } from '../wire.ts'
 
 /** Registration-side injected face: the recorder's host/browser bindings. */
@@ -128,6 +128,15 @@ function webRecognition(): SpeechRecognitionLike | undefined {
   }
 }
 
+/** Close an AudioContext, ignoring a refusal (it already closed). */
+function closeContext(context: AudioContext): void {
+  try {
+    void Promise.resolve(context.close()).catch(() => {})
+  } catch {
+    // The context already closed.
+  }
+}
+
 /** Base64 of raw bytes, for the `talk/transcribe` wire field. */
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
@@ -144,11 +153,8 @@ function detailOf(error: unknown): string {
 }
 
 /**
- * Detector tick, in milliseconds: the cadence of the voice-activity reads in a segmented capture.
- *
- * Named limit (documented, not fixed): segment onset clips up to one tick. A segment starts at
- * the first tick that reads speech, with no pre-roll, so up to 500 ms at the start of each
- * utterance can be missing from its recording.
+ * Display tick, in milliseconds: how often the elapsed counter of a segmented capture updates.
+ * Detection does not run on this tick: the segmenter judges every audio block as it arrives.
  */
 const TICK_MS = 500
 
@@ -164,30 +170,31 @@ const MIC_CONSTRAINTS: MediaStreamConstraints = {
 }
 
 /**
+ * The audio graph of one capture: the microphone feeds the capture worklet, and the worklet's
+ * output goes through a gain of zero to the destination. The worklet runs only while it
+ * reaches the destination, and the zero gain keeps it silent.
+ */
+interface CaptureGraph {
+  context: AudioContext
+  source: MediaStreamAudioSourceNode
+  node: AudioWorkletNode
+  gain: GainNode
+}
+
+/**
  * One segmented capture, from the press until its final text is placed. The microphone
- * stays open; each speech run becomes its own MediaRecorder segment, transcribed in order.
+ * stays open. The segmenter cuts speech segments out of the block stream, and each one is
+ * transcribed in order.
  */
 interface SegmentedCapture {
   stream: MediaStream
-  mime: string
-  /** The recorder of the segment being captured, or null between segments. */
-  recorder: MediaRecorder | null
-  /** Segments started so far; the 120-second timeout runs only once this is above zero. */
-  segments: number
+  graph: CaptureGraph
+  /** Judges each audio block and cuts the segments, pre-roll included (speech-segmenter.ts). */
+  segmenter: Segmenter
   /** When the capture started (Date.now), for the elapsed display. */
   startedAt: number
   /** The raw transcripts of every segment so far, joined with single spaces. */
   accumulated: string
-  /** Silence, in milliseconds, inside the current segment (ends it at vad.silenceMs). */
-  pauseMs: number
-  /** Silence, in milliseconds, since the last speech frame (the 120-second timeout). */
-  idleMs: number
-  /**
-   * Segments whose `onstop` has not fired yet. It rises once when a segment starts and falls
-   * once, in that segment's own `onstop`, so it cannot go negative. A browser-ended segment
-   * (the recorder stopped by itself) falls the same way as one this code stopped.
-   */
-  segmentsOpen: number
   /** Set once the capture is ending (stop or the 120-second timeout). Nothing new is detected or asked of heal. */
   closing: boolean
   /** Set on unmount. Nothing from this capture is transcribed into the draft or submitted after it. */
@@ -197,19 +204,6 @@ interface SegmentedCapture {
   /** Serial chain: every segment and the final step run here, one after another. */
   queue: Promise<void>
   timer: ReturnType<typeof setInterval> | null
-}
-
-function supportedMime(): string | undefined {
-  if (typeof MediaRecorder === 'undefined') return undefined
-  const candidates = ['audio/wav', 'audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
-  for (const candidate of candidates) {
-    try {
-      if (MediaRecorder.isTypeSupported(candidate)) return candidate
-    } catch {
-      // isTypeSupported can throw on hostile environments; try the next.
-    }
-  }
-  return undefined
 }
 
 /** What one mount has learned about the browser engine: whether it fires `onstart`. */
@@ -559,9 +553,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   const playStartedAtRef = useRef(0)
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
   const captureRef = useRef<SegmentedCapture | null>(null)
+  /** True while a press is opening its capture (permission prompt, worklet load), so a second press starts nothing. */
+  const startingRef = useRef(false)
   /** False once this button unmounted: no late transcript or answer may reach the composer. */
   const liveRef = useRef(true)
   const micRef = useRef(mic)
@@ -598,37 +592,50 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     recognitionRef.current = null
   }
 
-  // Voice-activity detection (VAD) is always on: attach an AnalyserNode to the live
-  // stream. Returns false when the browser has no AudioContext or the attach fails;
-  // the caller then refuses to record.
-  const setupVad = (stream: MediaStream): boolean => {
+  // Open the capture graph on the live stream (see CaptureGraph). Returns null when the browser
+  // has no AudioContext or AudioWorklet, or a step fails; the caller then refuses to record.
+  const setupCapture = async (stream: MediaStream): Promise<CaptureGraph | null> => {
     const Ctor = (globalThis as unknown as { AudioContext?: typeof AudioContext }).AudioContext
-    if (Ctor === undefined) return false
+    if (Ctor === undefined || typeof AudioWorkletNode === 'undefined') return null
+    let context: AudioContext
     try {
-      const context = new Ctor()
-      const source = context.createMediaStreamSource(stream)
-      const analyser = context.createAnalyser()
-      analyser.fftSize = 2048
-      source.connect(analyser)
-      audioContextRef.current = context
-      analyserRef.current = analyser
-      return true
+      context = new Ctor()
     } catch {
-      return false
+      return null
+    }
+    try {
+      const url = URL.createObjectURL(new Blob([CAPTURE_WORKLET_SOURCE], { type: 'text/javascript' }))
+      try {
+        await context.audioWorklet.addModule(url)
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+      const source = context.createMediaStreamSource(stream)
+      const node = new AudioWorkletNode(context, CAPTURE_WORKLET_NAME)
+      const gain = context.createGain()
+      gain.gain.value = 0
+      source.connect(node)
+      node.connect(gain)
+      gain.connect(context.destination)
+      await context.resume()
+      return { context, source, node, gain }
+    } catch {
+      closeContext(context)
+      return null
     }
   }
 
-  const teardownVad = (): void => {
-    analyserRef.current = null
-    const context = audioContextRef.current
-    audioContextRef.current = null
-    if (context !== null) {
+  // Detach the capture graph and close its context. Safe to call more than once.
+  const teardownGraph = (graph: CaptureGraph): void => {
+    graph.node.port.onmessage = null
+    for (const node of [graph.source, graph.node, graph.gain]) {
       try {
-        void context.close()
+        node.disconnect()
       } catch {
-        // The context already closed.
+        // Already disconnected.
       }
     }
+    closeContext(graph.context)
   }
 
   // Serial chain for one segmented capture: segments and the final step run in order.
@@ -652,27 +659,21 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     setMic(foldMic(micRef.current, { kind: 'transcribed', text }))
   }
 
-  // Queue the final step once the capture is ending and no recorder stop is still pending.
-  const maybeFinalize = (capture: SegmentedCapture): void => {
-    if (!capture.closing || capture.finalized || capture.segmentsOpen > 0) return
+  // Queue the final step once. It runs after every segment already queued, so the last words reach the draft first.
+  const queueFinalize = (capture: SegmentedCapture): void => {
+    if (capture.finalized) return
     capture.finalized = true
     enqueue(capture, async () => {
       finalizeCapture(capture)
     })
   }
 
-  // One segment: convert, transcribe, log the raw text, then ask the heal call. A capture that
+  // One segment: encode, transcribe, log the raw text, then ask the heal call. A capture that
   // is ending keeps the segment's words in the draft but asks heal nothing and submits nothing.
   // An unmounted capture keeps nothing from its late segments.
-  const processSegment = async (capture: SegmentedCapture, blob: Blob): Promise<void> => {
+  const processSegment = async (capture: SegmentedCapture, samples: Float32Array): Promise<void> => {
     if (capture.abandoned) return
-    let wav: Uint8Array
-    try {
-      wav = await recordingToWav16kMono(await blob.arrayBuffer())
-    } catch (error) {
-      setMic(foldMic(micRef.current, { kind: 'failed', message: `could not convert the recording to 16 kHz WAV: ${detailOf(error)}` }))
-      return
-    }
+    const wav = encodeWav16kMono(samples)
     let raw: string
     try {
       raw = (await transcribe(bytesToBase64(wav))).text
@@ -720,62 +721,23 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     void submitText(prompt)
   }
 
-  const startSegment = (capture: SegmentedCapture): void => {
-    let recorder: MediaRecorder
-    try {
-      recorder = new MediaRecorder(capture.stream, { mimeType: capture.mime })
-    } catch {
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone capture failed' }))
-      return
-    }
-    // The chunks belong to this recorder only, so a late onstop never reads the next segment.
-    const chunks: Blob[] = []
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data)
-    }
-    // This segment's own count entry. Its onstop releases it once, so the total cannot go negative.
-    let counted = true
-    capture.segmentsOpen += 1
-    recorder.onstop = () => {
-      if (counted) {
-        counted = false
-        capture.segmentsOpen -= 1
+  // One audio block from the worklet, in order. The segmenter judges every block: a finished
+  // segment is queued for transcription, and the 120-second silence timeout closes the capture.
+  // Barge-in comes from the listener alone, so the reply's own echo in this stream cannot cancel the turn.
+  const onBlock = (capture: SegmentedCapture, block: Float32Array): void => {
+    if (capture.closing || capture.abandoned) return
+    for (const event of feedBlock(capture.segmenter, block)) {
+      if (event.kind === 'timeout') {
+        closeCapture(capture)
+        return
       }
-      // A stop this code did not request (the browser ended the recorder) ends the segment
-      // too. `capture.recorder` is left alone here: `isRecording` already treats an inactive
-      // recorder as not recording, and every path that clears the field clears it outright.
-      const blob = new Blob(chunks, { type: capture.mime })
-      enqueue(capture, () => processSegment(capture, blob))
-      maybeFinalize(capture)
-    }
-    try {
-      recorder.start()
-    } catch {
-      counted = false
-      capture.segmentsOpen -= 1
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone capture failed' }))
-      return
-    }
-    capture.recorder = recorder
-    capture.segments += 1
-    capture.pauseMs = 0
-  }
-
-  // Ends the current segment, if any. Its onstop queues the transcription.
-  const stopCurrentSegment = (capture: SegmentedCapture): void => {
-    const recorder = capture.recorder
-    capture.recorder = null
-    capture.pauseMs = 0
-    // An inactive recorder has stopped or is about to: its onstop releases the count, so nothing is added here.
-    if (recorder === null || recorder.state === 'inactive') return
-    try {
-      recorder.stop()
-    } catch {
-      // stop() refused. Its onstop still follows a stop the browser accepted; if it does not, the count stays up.
+      const samples = event.samples
+      enqueue(capture, () => processSegment(capture, samples))
     }
   }
 
-  // Ends the capture: no more detection, the current segment is flushed, then the final step runs.
+  // Ends the capture: no more detection, the open segment (if any) is flushed and transcribed,
+  // then the final step runs.
   const closeCapture = (capture: SegmentedCapture): void => {
     if (capture.closing) return
     capture.closing = true
@@ -784,54 +746,31 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       capture.timer = null
     }
     setRecording(false)
-    teardownVad()
     setMic(foldMic(micRef.current, { kind: 'stopped' }))
-    stopCurrentSegment(capture)
-    maybeFinalize(capture)
+    const tail = flushSegment(capture.segmenter)
+    teardownGraph(capture.graph)
+    if (tail !== null) enqueue(capture, () => processSegment(capture, tail))
+    queueFinalize(capture)
   }
 
-  // One detector tick. Speech opens a segment; a pause of vad.silenceMs ends it. The
-  // 120-second timeout counts silence since the last speech, and only after a segment exists.
-  // A recorder is taking audio only while it is neither inactive nor stopped on this code's request.
-  const isRecording = (capture: SegmentedCapture): boolean =>
-    capture.recorder !== null && capture.recorder.state !== 'inactive'
-
-  const segmentTick = (capture: SegmentedCapture, record: TalkStatus['record']): void => {
-    const analyser = analyserRef.current
-    if (analyser === null || capture.closing) return
-    const buffer = new Float32Array(analyser.fftSize)
-    analyser.getFloatTimeDomainData(buffer)
-    const speech = isSpeechFrame(rmsOf(buffer), record.vad.energyThreshold)
-    capture.idleMs = advanceSilence(capture.idleMs, TICK_MS, speech)
-    // The capture decides segmentation only. Barge-in comes from the listener alone, so the reply's own echo in the capture stream cannot cancel the turn.
-    if (speech) {
-      capture.pauseMs = 0
-      // A recorder that stopped by itself is not taking audio, so speech starts a new segment at once.
-      if (!isRecording(capture)) startSegment(capture)
-    } else if (isRecording(capture)) {
-      capture.pauseMs = advanceSilence(capture.pauseMs, TICK_MS, false)
-      if (silenceTrips(capture.pauseMs, record.vad.silenceMs)) stopCurrentSegment(capture)
-    }
-    if (capture.segments > 0 && silenceTrips(capture.idleMs, CAPTURE_SILENCE_TIMEOUT_MS)) closeCapture(capture)
-  }
-
-  const startSegmentedCapture = (stream: MediaStream, mime: string, record: TalkStatus['record']): void => {
+  const startSegmentedCapture = (stream: MediaStream, graph: CaptureGraph, record: TalkStatus['record']): void => {
     const capture: SegmentedCapture = {
       stream,
-      mime,
-      recorder: null,
-      segments: 0,
+      graph,
+      segmenter: createSegmenter({
+        sampleRate: graph.context.sampleRate,
+        threshold: record.vad.energyThreshold,
+        silenceMs: record.vad.silenceMs,
+      }),
       startedAt: Date.now(),
       accumulated: '',
-      pauseMs: 0,
-      idleMs: 0,
-      segmentsOpen: 0,
       closing: false,
       abandoned: false,
       finalized: false,
       queue: Promise.resolve(),
       timer: null,
     }
+    graph.node.port.onmessage = (event: MessageEvent<Float32Array>) => onBlock(capture, event.data)
     captureRef.current = capture
     // A listener that resolved during the permission wait, or an owned one still open, now hands off to this capture's stream.
     syncListening()
@@ -840,7 +779,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     capture.timer = setInterval(() => {
       const elapsed = Math.ceil((Date.now() - capture.startedAt) / 1000)
       setMic(foldMic(micRef.current, { kind: 'tick', elapsedSec: elapsed }))
-      segmentTick(capture, record)
     }, TICK_MS)
   }
 
@@ -1115,34 +1053,45 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       setRecording(true)
       return
     }
-    const mime = supportedMime()
-    if (mime === undefined || navigator.mediaDevices === undefined) {
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'MediaRecorder is unavailable in this browser' }))
+    if (navigator.mediaDevices === undefined) {
+      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone capture is unavailable in this browser' }))
       return
     }
-    let stream: MediaStream
+    // A second press while this one still opens the capture starts nothing.
+    if (startingRef.current) return
+    startingRef.current = true
     try {
-      stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS)
-    } catch {
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone permission denied' }))
-      return
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS)
+      } catch {
+        setMic(foldMic(micRef.current, { kind: 'failed', message: 'microphone permission denied' }))
+        return
+      }
+      // The button unmounted while the permission prompt was open: release the microphone at once.
+      if (!liveRef.current) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      const graph = await setupCapture(stream)
+      // The button may also have unmounted while the worklet loaded: release everything at once.
+      if (!liveRef.current || graph === null) {
+        if (graph !== null) teardownGraph(graph)
+        stream.getTracks().forEach(track => track.stop())
+        if (liveRef.current) {
+          setMic(foldMic(micRef.current, { kind: 'failed', message: 'voice-activity detection is unavailable in this browser' }))
+        }
+        return
+      }
+      startSegmentedCapture(stream, graph, snapshot.record)
+    } finally {
+      startingRef.current = false
     }
-    // The button unmounted while the permission prompt was open: release the microphone at once.
-    if (!liveRef.current) {
-      stream.getTracks().forEach(track => track.stop())
-      return
-    }
-    if (!setupVad(stream)) {
-      stream.getTracks().forEach(track => track.stop())
-      setMic(foldMic(micRef.current, { kind: 'failed', message: 'voice-activity detection is unavailable in this browser' }))
-      return
-    }
-    startSegmentedCapture(stream, mime, snapshot.record)
   }
 
-  // Unmount: stop the detector interval and the segment recorder, release every
-  // microphone track, and mark the capture abandoned. The submit path reads the same live
-  // capture object this cleanup mutates, so a heal answer that arrives later is dropped.
+  // Unmount: stop the display timer, tear down the capture graph, release every microphone
+  // track, and mark the capture abandoned. The submit path reads the same live capture object
+  // this cleanup mutates, so a heal answer that arrives later is dropped.
   useEffect(() => {
     liveRef.current = true
     return () => {
@@ -1156,16 +1105,8 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
           clearInterval(capture.timer)
           capture.timer = null
         }
-        const segment = capture.recorder
-        capture.recorder = null
         capture.stream.getTracks().forEach(track => track.stop())
-        if (segment !== null && segment.state !== 'inactive') {
-          try {
-            segment.stop()
-          } catch {
-            // The recorder already stopped.
-          }
-        }
+        teardownGraph(capture.graph)
       }
       releaseListener()
       if (armTimerRef.current !== null) {
@@ -1180,7 +1121,6 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
         }
         recognitionRef.current = null
       }
-      teardownVad()
     }
     // Once per mount: the cleanup reads refs only, so the first render's closures are current.
     // eslint-disable-next-line react-hooks/exhaustive-deps

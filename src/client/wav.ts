@@ -1,9 +1,11 @@
 /**
- * WAV conversion for the composer microphone. MediaRecorder records in the
- * browser's own container (WebM/Opus in Chrome and Firefox, MP4 in Safari),
- * and the transcription route refuses those containers. The recording is
- * therefore decoded by the browser at 16 kHz, mixed to mono, and written as
- * 16-bit PCM WAV. Only the decode step touches a browser API; the rest is pure.
+ * WAV conversion for the composer microphone. The capture (capture-worklet.ts)
+ * hands over mono samples; the segmenter resamples each segment to 16 kHz, and
+ * encodeWav16kMono writes it as 16-bit PCM WAV. No browser container or codec is
+ * involved, because the transcription route refuses browser containers (WebM/Opus
+ * in Chrome and Firefox, MP4 in Safari). recordingToWav16kMono and createDecoder
+ * decode a MediaRecorder recording; the microphone no longer uses them. Only
+ * createDecoder touches a browser API; the rest is pure.
  *
  * @module dsh-talk/client/wav
  */
@@ -50,8 +52,8 @@ function writeAscii(view: DataView, offset: number, text: string): void {
 /**
  * Encode mono samples as a 16-bit PCM WAV at 16 kHz. The header declares
  * format 1 (PCM), 1 channel, 16000 Hz, 16 bits. Samples are clamped to -1..1.
- * The caller must pass samples already at 16 kHz; {@link recordingToWav16kMono}
- * guarantees that by decoding through a 16 kHz context.
+ * The caller must pass samples already at 16 kHz; the segmenter's toSttRate does
+ * that for the microphone.
  *
  * @param samples - mono samples at 16 kHz, each nominally in -1..1.
  * @returns the complete WAV file bytes (44-byte header plus data).

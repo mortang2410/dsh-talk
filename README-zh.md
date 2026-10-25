@@ -53,7 +53,7 @@ DeepSeek Harness 的 voice-first 会话闭环：对它说话，听它回答。
 |---|---|
 | Harness | DeepSeek Harness `dsh-v0.2.1-alpha.1`（2026-09-24 适配：peer 第三段 + `engines.dsh` + `manifestVersion: 1`，月度 Compat workflow 已锚定该线）；门禁链于 2026-09-24 全绿（双 typecheck 尺子、86 个测试、build、self-contained、artifacts、pack）。npm 开发/测试线 `0.1.7-rc.2`，peers `>=0.1.2-rc.1 <0.2.0 || >=0.1.5-alpha.1 <0.2.0 || >=0.1.6-0 <0.2.0 || >=0.1.7-0 <0.2.0`。 |
 | Node | `^22.19.0 \|\| >=24.0.0` |
-| 浏览器 | Web Speech + MediaRecorder（Chrome/Edge 最佳）；其余场景用宿主侧转写/TTS 引擎 |
+| 浏览器 | Web Speech（Chrome/Edge 最佳），或用于宿主转写的 AudioWorklet 麦克风采集；其余场景用宿主侧转写/TTS 引擎 |
 
 ## 你能得到什么
 
@@ -68,7 +68,7 @@ DeepSeek Harness 的 voice-first 会话闭环：对它说话，听它回答。
 ```text
 浏览器                                 宿主
   🎙 按下 ──▶ 打断 ────────────────────▶ talk/interrupt
-  录音（MediaRecorder / Web Speech）
+  录音（AudioWorklet 分段 / Web Speech）
   转写（浏览器）或 talk/transcribe ────▶ FunASR / whisper.cpp
   回填草稿或提交  ◀── talk:speech 投影 ── speak 工具 / 事件播报
   ▶ 播放音频（talk/audio 或 speechSynthesis）
@@ -115,7 +115,7 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 | `record.enabled` | `true` | 显示输入框麦克风按钮 |
 | `record.hotkey` | *(无)* | 可选切换快捷键，如 `"alt+r"` |
 | `record.autoSubmit` | `false` | 转写结果直接作为用户消息提交（false = 回填草稿） |
-| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | 语音活动检测，始终开启（`enabled` 必须为 `true`）：静音自动结束录音。缺 AudioContext 时麦克风显示错误且不录音 |
+| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | 语音活动检测，始终开启（`enabled` 必须为 `true`）：语音后停顿达到 `silenceMs` 即结束当前语音段，该段随即转写。缺 AudioContext 或 AudioWorklet 时麦克风显示错误且不录音 |
 | `stt.engine` | `auto` | `auto` / `web` / `funasr` / `whisper`；auto 优先已配置的本地引擎，其次 Web Speech |
 | `stt.language` | `auto` | BCP-47 语言或 `auto` |
 | `stt.interim` | `true` | 显示中间转写（Web Speech） |
@@ -137,7 +137,7 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 | `maxSpeakChars` | `20000` | speak 工具文本上限（1..100000） |
 | `maxAudioCacheBytes` | `8388608` | 内存合成音频缓存上限（1 MiB..64 MiB） |
 
-`stt.silenceFinaliseMs` 与 `record.vad.silenceMs` 是两套独立机制：前者在连续 Web Speech 识别听不到语音时定稿转写文本；后者是 MediaRecorder 的能量检测器，用于结束录音（`record.autoSubmit` 开启时随即提交）。两者处于不同流水线，不共享任何状态。
+`stt.silenceFinaliseMs` 与 `record.vad.silenceMs` 是两套独立机制：前者在连续 Web Speech 识别听不到语音时定稿转写文本；后者是能量检测器，在宿主转写采集中结束每个语音段，该段随即送去转写。`record.autoSubmit` 仅作用于 Web Speech：宿主转写采集从不自行提交文本，由触发短语（经宿主的 heal 步骤判定）发送每条提示，停止采集时未发送的文本留在草稿中。两者处于不同流水线，不共享任何状态。
 
 ## 工具与界面
 
@@ -164,9 +164,9 @@ dsh --profile web --dump-config | grep -A2 'id: talk'
 
 ## 已知限制
 
-- **浏览器支持**：Web Speech 与 MediaRecorder 均特性检测；不可用时麦克风按钮自动禁用，配置了宿主引擎（FunASR/whisper.cpp）仍可转写。
+- **浏览器支持**：仅当解析出的 STT 引擎为 `web` 时麦克风使用 Web Speech（经特性检测）；其余情况需要 AudioContext 与 AudioWorklet，缺少时按下麦克风会显示错误且不录音。配置的宿主引擎（FunASR/whisper.cpp）转写采集到的语音段。
 - **本地引擎需自行安装**：`edge-tts`、`piper`、`whisper.cpp` 可执行文件与模型需单独安装。
-- **录音格式**：浏览器按其原生 MediaRecorder 编解码器录音；whisper.cpp 可能要求 WAV 录音配置或服务端转换。
+- **录音格式**：每个语音段在浏览器中先转为 16 kHz、单声道、16 位 WAV 再发送，不涉及浏览器编解码器。
 - **设置重载生效**：设置页签追加到 profile patch；重载 profile（或重启 Web 应用）后生效。
 - **无该词汇表的宿主上实时播放历史为空**：在 `0.1.1-rc.2`、`0.1.2-alpha` 线、`0.1.2-rc.1` 与 `0.1.6-alpha.2` 上，宿主词汇表不认识 `dsh-talk/speech`，因此门不写入任何内容，客户端的会话级播放列表保持为空；`talk/latest(sessionId)` 仍返回最新一条朗读与「已跳过」计数。朗读本身、麦克风、设置页签与工具均不受影响。
 - **dsh-talk ≤ 0.2.1 写下的存量日志可能需要在冷加载前修复**：版本 0.2.1 及更早会追加未标记的 `dsh-talk/speech` 事件。在 `0.1.0-rc.7` 及更新的宿主上，日志已含这些事件的会话，其下一次冷加载会以 `SessionFormatUnsupportedError` 失败。修复：停止宿主，备份该会话的 `.jsonl` 日志，为每一行 `"type"` 为 `"dsh-talk/speech"` 的 JSON 记录加上顶层成员 `"ignorable":true`（例如在起始的 `{` 之后插入 `"ignorable":true,`），然后重新打开会话。其余内容不变，不会丢失任何数据；本版本的新追加永远不会产生未标记事件。

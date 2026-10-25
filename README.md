@@ -54,7 +54,7 @@ Press the mic, speak, and the reply is spoken back — with speak-to-interrupt.
 |---|---|
 | Harness | DeepSeek Harness `dsh-v0.2.1-alpha.1` (adapted 2026-09-24: third peer clause + `engines.dsh` + `manifestVersion: 1`, and the monthly Compat workflow anchored to that line); full gate chain green on 2026-09-24 (dual typecheck rulers, 86 tests, build, self-contained, artifacts, pack). npm dev/test line `0.1.7-rc.2`, peers `>=0.1.2-rc.1 <0.2.0 || >=0.1.5-alpha.1 <0.2.0 || >=0.1.6-0 <0.2.0 || >=0.1.7-0 <0.2.0`. |
 | Node | `^22.19.0 \|\| >=24.0.0` |
-| Browser | Web Speech + MediaRecorder (Chrome/Edge best); host transcription/TTS engines for the rest |
+| Browser | Web Speech (Chrome/Edge best), or an AudioWorklet mic capture for host transcription; host transcription/TTS engines for the rest |
 
 ## What you get
 
@@ -69,7 +69,7 @@ Press the mic, speak, and the reply is spoken back — with speak-to-interrupt.
 ```text
 browser                                host
   🎙 press ──▶ interrupt ─────────────────▶ talk/interrupt
-  record (MediaRecorder / Web Speech)
+  record (AudioWorklet segments / Web Speech)
   transcribe (browser) or talk/transcribe ─▶ FunASR / whisper.cpp
   setDraft(text) or submit()  ◀── talk:speech projection ── speak tool / announcements
   ▶ play audio (talk/audio or speechSynthesis)
@@ -116,7 +116,7 @@ All tunables are Schemastery `Config` fields (changeable from cordis.yml). `cord
 | `record.enabled` | `true` | Show the composer mic button |
 | `record.hotkey` | *(none)* | Optional toggle hotkey, e.g. `"alt+r"` |
 | `record.autoSubmit` | `false` | Submit the transcription as a user message (false = fill the draft) |
-| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | Voice-activity detection, always on (`enabled` must stay `true`): silence auto-ends the recording. Without `AudioContext` the mic shows an error and records nothing |
+| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | Voice-activity detection, always on (`enabled` must stay `true`): a pause of `silenceMs` after speech ends the current segment, which is transcribed. Without `AudioContext` and `AudioWorklet` the mic shows an error and records nothing |
 | `stt.engine` | `auto` | `auto` / `web` / `funasr` / `whisper`; auto prefers a configured local engine, then Web Speech |
 | `stt.language` | `auto` | BCP-47 language or `auto` |
 | `stt.interim` | `true` | Show interim transcriptions (Web Speech) |
@@ -138,7 +138,7 @@ All tunables are Schemastery `Config` fields (changeable from cordis.yml). `cord
 | `maxSpeakChars` | `20000` | Cap on the speak tool's text length (1..100000) |
 | `maxAudioCacheBytes` | `8388608` | In-memory synthesized-audio cache cap (1 MiB..64 MiB) |
 
-`stt.silenceFinaliseMs` and `record.vad.silenceMs` are separate mechanisms: the first finalises the Web Speech transcript when continuous recognition hears no speech, the second is the MediaRecorder energy-based detector that ends the recording (and submits it when `record.autoSubmit` is on). They run in different pipelines and share no state.
+`stt.silenceFinaliseMs` and `record.vad.silenceMs` are separate mechanisms: the first finalises the Web Speech transcript when continuous recognition hears no speech, the second is the energy-based detector that ends each speech segment of the host-transcription capture, and that segment is then sent for transcription. `record.autoSubmit` applies only to Web Speech: the host-transcription capture never submits text by itself. A trigger phrase (checked by the host's heal step) sends each prompt, and text not yet sent stays in the draft when the capture stops. They run in different pipelines and share no state.
 
 ## Tools & surfaces
 
@@ -165,9 +165,9 @@ All tunables are Schemastery `Config` fields (changeable from cordis.yml). `cord
 
 ## Known limitations
 
-- **Browser support**: Web Speech and MediaRecorder are feature-detected; without them the mic button disables itself and host engines (FunASR/whisper.cpp) can still transcribe when configured.
+- **Browser support**: the mic uses Web Speech only when the resolved STT engine is `web` (feature-detected). Otherwise it needs `AudioContext` and `AudioWorklet`; without them, pressing the mic shows an error and records nothing. Host engines (FunASR/whisper.cpp) transcribe the captured segments when configured.
 - **Local engines are your install**: `edge-tts`, `piper`, and `whisper.cpp` executables and models must be installed separately.
-- **Recording format**: the browser records with its native MediaRecorder codec; whisper.cpp may require a WAV-configured recorder or a server-side conversion for other formats.
+- **Recording format**: each segment is converted in the browser to 16 kHz mono 16-bit WAV before it is sent, so no browser codec is involved.
 - **Settings apply on reload**: the settings tab appends to the profile patch; a profile reload (or web-app restart) activates the changes.
 - **Live playback history is empty on hosts without the vocabulary**: on `0.1.1-rc.2`, the `0.1.2-alpha` line, `0.1.2-rc.1`, and `0.1.6-alpha.2` the host vocabulary does not know `dsh-talk/speech`, so the gate writes nothing and the client's session-scoped playback list stays empty; `talk/latest(sessionId)` still answers with the newest utterance and the skipped counter. Speech itself, the mic, the settings tab, and the tool are unaffected.
 - **Legacy logs written by dsh-talk ≤ 0.2.1 may need repair before cold load**: versions through `0.2.1` appended unmarked `dsh-talk/speech` events. On hosts `0.1.0-rc.7` and newer, a session whose log already contains them fails its next cold load with `SessionFormatUnsupportedError`. Repair: stop the host, back up the session's `.jsonl` log, add `"ignorable":true` as a top-level member of every JSON line whose `"type"` is `"dsh-talk/speech"` (for example, insert `"ignorable":true,` right after the opening `{`), then reopen the session. Nothing else changes and nothing is lost; new appends from this version never add unmarked events.

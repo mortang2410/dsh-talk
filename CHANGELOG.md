@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The composer microphone (host-transcription path) captures through an AudioWorklet (`capture-worklet.ts`) instead of MediaRecorder. Every audio block is judged by the pure segmenter (`speech-segmenter.ts`), and each segment is sent as 16 kHz mono 16-bit WAV encoded in the browser.
+
+### Fixed
+
+- The composer microphone keeps 600 ms of audio before each speech onset (`PRE_ROLL_MS`), so a soft word start below the energy floor reaches the transcript. Before, the first syllables of such a word could be lost.
+- A second press while the capture is still opening starts nothing, so one press opens one capture.
+
 ## [0.3.18] - 2026-10-05
 
 undefined

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
  * The record button in segmented (voice-activity) capture: the microphone stays open
- * until a stop or the 120-second silence timeout. A heal trigger sends its prompt and the mic stays open. The browser
- * recorder, the analyser, the transcriber and the heal endpoint are stubbed, and the
- * clock is virtual (setInterval and Date only), so 120 seconds of silence runs at once.
+ * until a stop or the 120-second silence timeout. A heal trigger sends its prompt and the mic stays open.
+ * The capture worklet is replaced by a fake port that the test feeds with audio blocks, so every
+ * block the segmenter judges is one the test chose. The transcriber and the heal endpoint are
+ * stubbed, and the clock is virtual (setInterval and Date only), so 120 seconds of silence runs at once.
  *
  * @module dsh-talk/test/talk-mic-segments.spec
  */
@@ -16,7 +17,12 @@ import { healTranscript } from '../src/heal.ts'
 import type { TalkHeal, TalkStatus, TalkTranscript } from '../src/wire.ts'
 
 const TICK_MS = 500
+/** The capture rate. At 16 kHz a 1000-sample block is 62.5 ms, and no resampling happens. */
+const SAMPLE_RATE = 16000
+const BLOCK_SAMPLES = 1000
 const SPEECH_LEVEL = 0.2
+/** Under the energy floor (record.vad.energyThreshold is 0.01), so not speech. */
+const SOFT_LEVEL = 0.005
 /**
  * The model endpoint as the host sees it. The host's `talk/heal` runs `healTranscript`
  * against it; the browser must never fetch it, and nothing here points at port 8090.
@@ -40,8 +46,6 @@ const SETTINGS: TalkStatus = {
   patchFile: null,
 }
 
-/** Recorder instances, one per speech segment. */
-const recorders: FakeRecorder[] = []
 /** Base64 payloads sent to `transcribe`, in call order. */
 const transcribed: string[] = []
 /** Ordered event trace: segment raw logs and heal calls. */
@@ -54,103 +58,57 @@ const fetched: string[] = []
 let transcriptQueue: string[] = []
 /** How many of the next transcriber calls throw. */
 let transcribeFailures = 0
-/** When true, a page-requested stop fires its onstop later, as the W3C stop steps do. */
-let asyncStops = false
 /** Microphone tracks stopped so far (every track the button releases). */
 let trackStops = 0
 /** When set, every host heal call waits on it before answering (the call is in flight). */
 let healGate: Promise<void> | null = null
 let openHealGate: () => void = () => {}
-/** The microphone level the stubbed analyser reports. */
+/** The microphone level the test feeds into the capture worklet. */
 let micLevel = 0
 /** What the host's model call does: answer like the model, or fail (the host fallback then decides). */
 let healMode: 'model' | 'error' = 'model'
-/** When true, the stubbed decoder rejects every recording, so the WAV conversion fails. */
-let decodeFails = false
 /** Text the button wrote into the composer draft. */
 const drafts: string[] = []
 /** Texts the button submitted. */
 const sent: string[] = []
+/** Every audio context the button opened, in order. */
+const contexts: FakeAudioContext[] = []
+/** Every capture worklet node the button created, in order. The test feeds blocks to their ports. */
+const workletNodes: FakeWorkletNode[] = []
 
 const FINAL_PHRASE = /\bthat(?: is |'s )my prompt\b[.!?]?\s*$/iu
 
-class FakeBlob {
-  readonly parts: Uint8Array[] = []
-  constructor(parts: ReadonlyArray<Uint8Array | FakeBlob> = []) {
-    for (const part of parts) this.parts.push(part instanceof FakeBlob ? concat(part.parts) : part)
-  }
-  arrayBuffer(): Promise<ArrayBuffer> {
-    const joined = concat(this.parts)
-    return Promise.resolve(joined.buffer.slice(joined.byteOffset, joined.byteOffset + joined.byteLength) as ArrayBuffer)
-  }
-}
-
-function concat(parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((sum, part) => sum + part.byteLength, 0)
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const part of parts) {
-    out.set(part, offset)
-    offset += part.byteLength
-  }
-  return out
-}
-
-class FakeRecorder {
-  static isTypeSupported(type: string): boolean {
-    return type === 'audio/webm;codecs=opus'
-  }
-  state: 'inactive' | 'recording' = 'inactive'
-  ondataavailable: ((event: { data: FakeBlob }) => void) | null = null
-  onstop: (() => void) | null = null
-  start(): void {
-    this.state = 'recording'
-    recorders.push(this)
-  }
-  /** The page asked the recorder to stop: state turns inactive now, and the onstop follows (queued when asyncStops). */
-  stop(): void {
-    if (this.state === 'inactive') return
-    this.state = 'inactive'
-    this.deliver(asyncStops)
-  }
-  /** The browser ended the recorder by itself. The W3C stop steps queue its onstop, so it is always async here. */
-  selfStop(): void {
-    if (this.state === 'inactive') return
-    this.state = 'inactive'
-    this.deliver(true)
-  }
-  private deliver(later: boolean): void {
-    const fire = (): void => {
-      this.ondataavailable?.({ data: new FakeBlob([new Uint8Array([1, 2, 3, 4])]) })
-      this.onstop?.()
-    }
-    if (later) setTimeout(fire, 0)
-    else fire()
-  }
-}
-
 class FakeAudioContext {
-  createMediaStreamSource(): { connect: () => void } {
-    return { connect: () => {} }
+  readonly sampleRate = SAMPLE_RATE
+  readonly destination = {}
+  readonly audioWorklet = { addModule: async (_url: string): Promise<void> => {} }
+  closed = false
+  constructor() {
+    contexts.push(this)
   }
-  createAnalyser(): { fftSize: number; getFloatTimeDomainData: (buffer: Float32Array) => void } {
-    return {
-      fftSize: 2048,
-      getFloatTimeDomainData: (buffer: Float32Array) => {
-        buffer.fill(micLevel)
-      },
-    }
+  createMediaStreamSource(): { connect: () => void; disconnect: () => void } {
+    return { connect: () => {}, disconnect: () => {} }
+  }
+  createGain(): { gain: { value: number }; connect: () => void; disconnect: () => void } {
+    return { gain: { value: 1 }, connect: () => {}, disconnect: () => {} }
+  }
+  resume(): Promise<void> {
+    return Promise.resolve()
   }
   close(): Promise<void> {
+    this.closed = true
     return Promise.resolve()
   }
 }
 
-class FakeOfflineAudioContext {
-  decodeAudioData(_data: ArrayBuffer): Promise<{ numberOfChannels: number; getChannelData: (channel: number) => Float32Array }> {
-    if (decodeFails) return Promise.reject(new Error('EncodingError: Unable to decode audio data'))
-    return Promise.resolve({ numberOfChannels: 1, getChannelData: () => new Float32Array(1600) })
+/** The worklet node: its port is the only part the button uses, and the test calls it to deliver blocks. */
+class FakeWorkletNode {
+  readonly port: { onmessage: ((event: { data: Float32Array }) => void) | null } = { onmessage: null }
+  constructor(_context: unknown, _name: string) {
+    workletNodes.push(this)
   }
+  connect(): void {}
+  disconnect(): void {}
 }
 
 /**
@@ -198,6 +156,33 @@ function holdHeals(): void {
 function expectHostOnlyFetches(): void {
   expect(fetched).toEqual(healCalls.map(() => HOST_MODEL_URL))
   expect(fetched.filter(url => url.includes(':8090'))).toEqual([])
+}
+
+/**
+ * Decode a base64 WAV the button sent: its sample rate, its byte length, and one 16-bit PCM
+ * sample by index (the data starts after the 44-byte header).
+ */
+function wavOf(base64: string): { bytes: number; rate: number; sample: (index: number) => number } {
+  const binary = atob(base64)
+  const view = new DataView(new ArrayBuffer(binary.length))
+  for (let index = 0; index < binary.length; index += 1) view.setUint8(index, binary.charCodeAt(index))
+  return {
+    bytes: binary.length,
+    rate: view.getUint32(24, true),
+    sample: (index: number) => view.getInt16(44 + index * 2, true),
+  }
+}
+
+/**
+ * Feed `ms` of audio at `level` to every capture worklet, in blocks of BLOCK_SAMPLES. A graph
+ * torn down by the button has no port handler, so blocks sent after that go nowhere.
+ */
+function feed(ms: number, level: number): void {
+  const blocks = Math.round((ms / 1000) * SAMPLE_RATE / BLOCK_SAMPLES)
+  for (let index = 0; index < blocks; index += 1) {
+    const block = new Float32Array(BLOCK_SAMPLES).fill(level)
+    for (const node of workletNodes) node.port.onmessage?.({ data: block })
+  }
 }
 
 let container: HTMLElement
@@ -257,10 +242,11 @@ async function flush(): Promise<void> {
   })
 }
 
-/** Advance the virtual clock by whole detector ticks, flushing promises after each. */
+/** Advance the virtual clock by whole ticks, feeding the microphone level in between, and flush after each. */
 async function advance(ms: number): Promise<void> {
   for (let elapsed = 0; elapsed < ms; elapsed += TICK_MS) {
     await act(async () => {
+      feed(TICK_MS, micLevel)
       vi.advanceTimersByTime(TICK_MS)
     })
     await flush()
@@ -285,7 +271,8 @@ async function startCapture(): Promise<void> {
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
-  recorders.length = 0
+  contexts.length = 0
+  workletNodes.length = 0
   transcribed.length = 0
   events.length = 0
   healCalls.length = 0
@@ -296,8 +283,6 @@ beforeEach(() => {
   micLevel = 0
   healMode = 'model'
   transcribeFailures = 0
-  decodeFails = false
-  asyncStops = false
   trackStops = 0
   healGate = null
   openHealGate = () => {}
@@ -305,11 +290,12 @@ beforeEach(() => {
     if (args[0] === '[dsh-talk] segment raw transcript:') events.push(`segment:${String(args[1])}`)
   })
   vi.spyOn(console, 'warn').mockImplementation(() => {})
-  vi.stubGlobal('MediaRecorder', FakeRecorder)
-  vi.stubGlobal('Blob', FakeBlob)
   vi.stubGlobal('AudioContext', FakeAudioContext)
-  vi.stubGlobal('OfflineAudioContext', FakeOfflineAudioContext)
+  vi.stubGlobal('AudioWorkletNode', FakeWorkletNode)
   vi.stubGlobal('fetch', fakeFetch)
+  // jsdom has no object URLs; the worklet source is loaded through one.
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, writable: true, value: () => 'blob:dsh-talk-test' })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, writable: true, value: () => {} })
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
     value: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => { trackStops += 1 } }] }) },
@@ -329,6 +315,8 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  Reflect.deleteProperty(URL, 'createObjectURL')
+  Reflect.deleteProperty(URL, 'revokeObjectURL')
   Reflect.deleteProperty(navigator, 'mediaDevices')
 })
 
@@ -353,7 +341,6 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await advance(10000)
     await speak(1000)
     await advance(1000)
-    expect(recorders).toHaveLength(3)
     expect(transcribed).toHaveLength(3)
     expect(recording()).toBe(true)
     expect(sent).toEqual([])
@@ -430,6 +417,18 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await startCapture()
     await advance(130_000)
     expect(recording()).toBe(true)
+    expect(transcribed).toEqual([])
+    expect(drafts).toEqual([])
+  })
+
+  it('a stop before any speech writes nothing to the composer', async () => {
+    await mountAndSettle()
+    await startCapture()
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    expect(recording()).toBe(false)
     expect(transcribed).toEqual([])
     expect(drafts).toEqual([])
   })
@@ -542,8 +541,8 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expectHostOnlyFetches()
   })
 
-  it('unmounting mid-capture releases the microphone and the recorder, and a heal answer that arrives later submits nothing', async () => {
-    // Blocker 1 (P-F6): the stale closure must not submit, and nothing may keep recording.
+  it('unmounting mid-capture releases the microphone and the capture graph, and a heal answer that arrives later submits nothing', async () => {
+    // Blocker 1 (P-F6): the stale closure must not submit, and nothing may keep capturing.
     transcriptQueue = ['first sentence', 'second sentence that is my prompt']
     holdHeals()
     await mountAndSettle()
@@ -551,18 +550,18 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await speak(1000)
     await advance(1000)
     await speak(1000)
-    const open = recorders[recorders.length - 1]
-    expect(open?.state).toBe('recording')
+    const graph = contexts[contexts.length - 1]
+    expect(graph?.closed).toBe(false)
     unmount()
     expect(trackStops).toBeGreaterThan(0)
-    expect(open?.state).toBe('inactive')
-    const started = recorders.length
+    expect(graph?.closed).toBe(true)
+    const heard = transcribed.length
     openHealGate()
     await flush()
     micLevel = SPEECH_LEVEL
     await advance(5000)
     micLevel = 0
-    expect(recorders).toHaveLength(started)
+    expect(transcribed).toHaveLength(heard)
     expect(sent).toEqual([])
     expect(drafts).toEqual([])
   })
@@ -584,9 +583,7 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual(['hello that is my prompt'])
   })
 
-  it('the last segment reaches the draft when the browser fires its onstop after the user stops', async () => {
-    // Item 5 regression: the W3C stop steps are asynchronous; the draft waits for the last onstop.
-    asyncStops = true
+  it('the open segment is transcribed when the user stops mid-speech, so its words reach the draft', async () => {
     transcriptQueue = ['first part', 'last words']
     await mountAndSettle()
     await startCapture()
@@ -598,40 +595,53 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     })
     await flush()
     await flush()
+    expect(transcribed).toHaveLength(2)
     expect(drafts).toEqual(['first part last words'])
     expect(sent).toEqual([])
   })
 
-  it('a recorder that stops by itself ends its segment, and speech after it starts a new segment at once', async () => {
-    // Item 5 (P-F1): the dead window must not drop speech, and no segment may be lost from the draft.
-    transcriptQueue = ['first part', 'second part']
+  it('keeps the audio before a soft onset in the transcribed WAV, so a word start under the energy floor is not lost', async () => {
+    transcriptQueue = ['soft onset']
     await mountAndSettle()
     await startCapture()
-    await speak(1000)
-    recorders[0]?.selfStop()
-    await speak(1000)
+    micLevel = SOFT_LEVEL
     await advance(1000)
-    await flush()
-    expect(recorders).toHaveLength(2)
-    expect(transcribed).toHaveLength(2)
+    micLevel = SPEECH_LEVEL
+    await advance(500)
+    micLevel = 0
+    await advance(1000)
+    expect(transcribed).toHaveLength(1)
+    const wav = wavOf(transcribed[0] ?? '')
+    // 600 ms of pre-roll (9600 samples), 500 ms of speech (8000), 1000 ms of trailing silence (16000).
+    expect(wav.rate).toBe(16000)
+    expect(wav.bytes).toBe(44 + 2 * 33600)
+    expect(wav.sample(0)).toBe(164) // 0.005 x 32767 = 163.8, rounded
+    expect(wav.sample(9599)).toBe(164) // the last pre-roll sample is still the soft onset
+    expect(wav.sample(9600)).toBe(6553) // 0.2 x 32767 = 6553.4: the first loud sample
+    expect(wav.sample(33599)).toBe(0) // the trailing silence
+  })
+
+  it('the open segment of a capture stopped by the user keeps its pre-roll too', async () => {
+    transcriptQueue = ['late word']
+    await mountAndSettle()
+    await startCapture()
+    micLevel = SOFT_LEVEL
+    await advance(1000)
+    micLevel = SPEECH_LEVEL
+    await advance(500)
+    micLevel = 0
     await act(async () => {
       button().click()
     })
     await flush()
     await flush()
-    expect(drafts).toEqual(['first part second part'])
-  })
-
-  it('a conversion failure shows the error in the composer and keeps the capture open', async () => {
-    decodeFails = true
-    transcriptQueue = ['never transcribed']
-    await mountAndSettle()
-    await startCapture()
-    await speak(1000)
-    await advance(1000)
-    expect(errorText()).toBe('could not convert the recording to 16 kHz WAV: EncodingError: Unable to decode audio data')
-    expect(recording()).toBe(true)
-    expect(events.filter(event => event.startsWith('segment:'))).toEqual([])
+    expect(transcribed).toHaveLength(1)
+    const wav = wavOf(transcribed[0] ?? '')
+    // 600 ms of pre-roll and 500 ms of speech; the stop closes the segment with no trailing silence.
+    expect(wav.bytes).toBe(44 + 2 * (9600 + 8000))
+    expect(wav.sample(0)).toBe(164)
+    expect(wav.sample(9600)).toBe(6553)
+    expect(drafts).toEqual(['late word'])
   })
 
   it('refuses to record and shows an error when the browser has no AudioContext', async () => {
@@ -640,20 +650,37 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     await startCapture()
     expect(errorText()).toBe('voice-activity detection is unavailable in this browser')
     expect(recording()).toBe(false)
-    expect(recorders).toEqual([])
+    expect(workletNodes).toEqual([])
+    expect(trackStops).toBe(1)
+  })
+
+  it('refuses to record and shows an error when the capture worklet cannot load', async () => {
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+      override readonly audioWorklet = {
+        addModule: async (): Promise<void> => {
+          throw new Error('worklet blocked')
+        },
+      }
+    })
+    await mountAndSettle()
+    await startCapture()
+    expect(errorText()).toBe('voice-activity detection is unavailable in this browser')
+    expect(recording()).toBe(false)
+    expect(workletNodes).toEqual([])
+    expect(contexts.every(context => context.closed)).toBe(true)
     expect(trackStops).toBe(1)
   })
 
   it('refuses to record and shows an error when the AudioContext cannot attach the microphone', async () => {
-    vi.stubGlobal('AudioContext', class {
-      createMediaStreamSource(): never {
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+      override createMediaStreamSource(): never {
         throw new Error('no source node')
       }
     })
     await mountAndSettle()
     await startCapture()
     expect(errorText()).toBe('voice-activity detection is unavailable in this browser')
-    expect(recorders).toEqual([])
+    expect(workletNodes).toEqual([])
     expect(trackStops).toBe(1)
   })
 

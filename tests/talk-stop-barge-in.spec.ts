@@ -3,7 +3,7 @@
  * Barge-in while a reply is audible. The microphone is acquired when a reply starts and released when it
  * ends by any route. Barge-in comes from the listener alone: an analyser on the reply's microphone, or on a
  * running capture's stream. A capture decides segmentation only, and a press on the mic stops the reply first.
- * The microphone, audio context and recorder are stubbed. Each AudioContext has its own frame queue: each
+ * The microphone, audio context and capture worklet are stubbed. Each AudioContext has its own frame queue: each
  * analyser read takes the next level, and silence once the queue is empty.
  *
  * @module dsh-talk/test/talk-stop-barge-in.spec
@@ -103,12 +103,18 @@ class FakeContext {
   /** The levels the next analyser reads take, one per read. */
   queue: number[] = []
   closed = 0
+  readonly sampleRate = 48000
+  readonly destination = {}
+  readonly audioWorklet = { addModule: async (_url: string): Promise<void> => {} }
   constructor() {
     FakeContext.instances.push(this)
   }
-  createMediaStreamSource(stream: unknown): { connect(target: unknown): void } {
+  createMediaStreamSource(stream: unknown): { connect(target: unknown): void; disconnect(): void } {
     this.source = stream
-    return { connect() {} }
+    return { connect() {}, disconnect() {} }
+  }
+  createGain(): { gain: { value: number }; connect(target: unknown): void; disconnect(): void } {
+    return { gain: { value: 1 }, connect() {}, disconnect() {} }
   }
   createAnalyser(): { fftSize: number; connect(target: unknown): void; getFloatTimeDomainData(buffer: Float32Array): void } {
     return {
@@ -119,30 +125,27 @@ class FakeContext {
       },
     }
   }
+  resume(): Promise<void> {
+    return Promise.resolve()
+  }
   close(): Promise<void> {
     this.closed += 1
     return Promise.resolve()
   }
 }
 
-class FakeRecorder {
-  static instances: FakeRecorder[] = []
-  static isTypeSupported(_type: string): boolean {
-    return true
+/** The capture worklet. The test feeds audio blocks to its port, as the browser's microphone would. */
+class FakeWorkletNode {
+  static instances: FakeWorkletNode[] = []
+  readonly port: { onmessage: ((event: { data: Float32Array }) => void) | null } = { onmessage: null }
+  /** The context the node was created on; its source names the stream the worklet hears. */
+  readonly owner: FakeContext
+  constructor(context: FakeContext, _name: string) {
+    this.owner = context
+    FakeWorkletNode.instances.push(this)
   }
-  state: 'inactive' | 'recording' = 'inactive'
-  ondataavailable: ((event: { data: { size: number } }) => void) | null = null
-  onstop: (() => void) | null = null
-  constructor(_stream: unknown, _options: unknown) {
-    FakeRecorder.instances.push(this)
-  }
-  start(): void {
-    this.state = 'recording'
-  }
-  stop(): void {
-    this.state = 'inactive'
-    this.onstop?.()
-  }
+  connect(): void {}
+  disconnect(): void {}
 }
 
 interface TurnState {
@@ -260,6 +263,16 @@ function queueOn(stream: FakeStream | undefined, levels: number[], index = 0): v
   context.queue = levels
 }
 
+/** Feed `ms` of audio at `level` into the capture worklet on one stream (a 1024-sample block at 48 kHz is about 21 ms). */
+function feedCapture(stream: FakeStream | undefined, level: number, ms: number): void {
+  const node = FakeWorkletNode.instances.find((candidate) => candidate.owner.source === stream)
+  if (node === undefined) throw new Error('no capture worklet on this stream yet')
+  const blocks = Math.round((ms / 1000) * 48000 / 1024)
+  for (let index = 0; index < blocks; index += 1) {
+    node.port.onmessage?.({ data: new Float32Array(1024).fill(level) })
+  }
+}
+
 /** Resolve the held microphone request with a fresh stream, at the moment the test chooses. */
 async function resolveDeferredMic(): Promise<FakeStream> {
   const stream = new FakeStream()
@@ -305,11 +318,11 @@ describe('barge-in while a reply is audible', () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } })
     vi.stubGlobal('Audio', FiringAudio)
     vi.stubGlobal('AudioContext', FakeContext)
-    vi.stubGlobal('MediaRecorder', FakeRecorder)
+    vi.stubGlobal('AudioWorkletNode', FakeWorkletNode)
     Object.assign(URL, { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} })
     FiringAudio.instances = []
     FakeContext.instances = []
-    FakeRecorder.instances = []
+    FakeWorkletNode.instances = []
     micStreams = []
     micDenied = false
     micDeferred = false
@@ -550,8 +563,8 @@ describe('barge-in while a reply is audible', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(1)
     const player = FiringAudio.instances[0]
 
-    // The capture (oldest context on its stream) reads sustained speech, the echo level. The listener reads silence.
-    queueOn(micStreams[0], speech(20), 0)
+    // The capture hears sustained speech, the echo level, on its worklet. The listener reads silence.
+    feedCapture(micStreams[0], 0.5, TICK_MS * 4)
     await advance(TICK_MS * 4)
     expect(turn.cancels).toEqual([])
     expect(player?.pauses).toBe(0)

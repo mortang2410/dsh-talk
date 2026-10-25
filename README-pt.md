@@ -53,7 +53,7 @@ Pressione o microfone, fale e a resposta é lida em voz alta — falar interromp
 |---|---|
 | Harness | DeepSeek Harness `dsh-v0.2.1-alpha.1` (adaptado em 2026-09-24: terceira cláusula de peers + `engines.dsh` + `manifestVersion: 1`, e o workflow Compat mensal ancorado nessa linha); cadeia completa de gates verde em 2026-09-24 (duas réguas de typecheck, 86 testes, build, self-contained, artifacts, pack). Linha npm de desenvolvimento/teste `0.1.7-rc.2`, peers `>=0.1.2-rc.1 <0.2.0 || >=0.1.5-alpha.1 <0.2.0 || >=0.1.6-0 <0.2.0 || >=0.1.7-0 <0.2.0`. |
 | Node | `^22.19.0 \|\| >=24.0.0` |
-| Navegador | Web Speech + MediaRecorder (melhor no Chrome/Edge); motores de transcrição/TTS do host para o resto |
+| Navegador | Web Speech (melhor no Chrome/Edge), ou captura de microfone com AudioWorklet para a transcrição do host; motores de transcrição/TTS do host para o resto |
 
 ## O que você ganha
 
@@ -106,7 +106,7 @@ Todos os ajustes são campos `Config` do Schemastery (alteráveis pelo cordis.ym
 | `record.enabled` | `true` | Mostrar o botão de microfone do compositor |
 | `record.hotkey` | *(nenhuma)* | Atalho opcional, ex. `"alt+r"` |
 | `record.autoSubmit` | `false` | Enviar a transcrição como mensagem do usuário (false = preencher o rascunho) |
-| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | Detecção de atividade de voz, sempre ativa (`enabled` deve ser `true`): o silêncio encerra a gravação automaticamente. Sem `AudioContext` o microfone mostra um erro e não grava |
+| `record.vad.enabled` / `silenceMs` / `energyThreshold` | `true` / `1500` / `0.01` | Detecção de atividade de voz, sempre ativa (`enabled` deve ser `true`): uma pausa de `silenceMs` após a fala encerra o segmento atual, que é transcrito. Sem `AudioContext` nem `AudioWorklet` o microfone mostra um erro e não grava |
 | `stt.engine` | `auto` | `auto` / `web` / `funasr` / `whisper`; auto prefere um motor local configurado, depois Web Speech |
 | `stt.language` | `auto` | Idioma BCP-47 ou `auto` |
 | `stt.interim` | `true` | Mostrar transcrições intermediárias (Web Speech) |
@@ -128,7 +128,7 @@ Todos os ajustes são campos `Config` do Schemastery (alteráveis pelo cordis.ym
 | `maxSpeakChars` | `20000` | Limite do texto da ferramenta speak (1..100000) |
 | `maxAudioCacheBytes` | `8388608` | Limite da cache de áudio em memória (1 MiB..64 MiB) |
 
-`stt.silenceFinaliseMs` e `record.vad.silenceMs` são mecanismos distintos: o primeiro finaliza a transcrição do Web Speech quando o reconhecimento contínuo deixa de ouvir fala; o segundo é o detetor por energia do MediaRecorder que encerra a gravação (e a envia quando `record.autoSubmit` está ativo). Correm em pipelines diferentes e não partilham estado.
+`stt.silenceFinaliseMs` e `record.vad.silenceMs` são mecanismos distintos: o primeiro finaliza a transcrição do Web Speech quando o reconhecimento contínuo deixa de ouvir fala; o segundo é o detetor por energia que encerra cada segmento de fala da captura com transcrição no host (uma pausa dessa duração após a fala fecha o segmento, que é enviado para transcrição). `record.autoSubmit` aplica-se só ao Web Speech: a captura com transcrição no host nunca envia o texto sozinha; uma frase de gatilho (avaliada pela chamada heal do host) envia cada prompt, e o texto restante fica no rascunho sem envio quando a captura para. Correm em pipelines diferentes e não partilham estado.
 
 ## Ferramentas e superfícies
 
@@ -155,9 +155,9 @@ Todos os ajustes são campos `Config` do Schemastery (alteráveis pelo cordis.ym
 
 ## Limitações conhecidas
 
-- **Suporte de navegador**: Web Speech e MediaRecorder são detectados por capacidade; sem eles o botão desativa e os motores do host (FunASR/whisper.cpp) podem transcrever quando configurados.
+- **Suporte de navegador**: o microfone usa Web Speech só quando o motor STT resolvido é `web` (detectado por capacidade). Nos outros casos precisa de AudioContext e AudioWorklet; sem eles, ao premir o microfone aparece um erro e nada é gravado. Os motores do host (FunASR/whisper.cpp) transcrevem os segmentos capturados quando configurados.
 - **Motores locais são instalação sua**: os executáveis e modelos de `edge-tts`, `piper` e `whisper.cpp` devem ser instalados à parte.
-- **Formato de gravação**: o navegador grava com seu codec nativo do MediaRecorder; o whisper.cpp pode exigir um gravador WAV ou conversão no servidor.
+- **Formato de gravação**: cada segmento é convertido no navegador para WAV de 16 kHz, mono, 16 bits antes de ser enviado; nenhum codec do navegador intervém.
 - **Configurações aplicam ao recarregar**: a aba anexa ao patch do perfil; um reload do perfil (ou reinício da web) ativa as mudanças.
 - **O histórico de reprodução ao vivo fica vazio em hosts sem esse vocabulário**: em `0.1.1-rc.2`, na linha `0.1.2-alpha`, em `0.1.2-rc.1` e em `0.1.6-alpha.2` o vocabulário do host não conhece `dsh-talk/speech`, então a comporta não escreve nada e a lista de reprodução da sessão no cliente fica vazia; `talk/latest(sessionId)` continua respondendo com a última fala e o contador de omitidos. A fala em si, o microfone, a aba de configurações e a ferramenta não são afetados.
 - **Registros antigos escritos pelo dsh-talk ≤ 0.2.1 podem exigir reparo antes do carregamento a frio**: versões até `0.2.1` anexavam eventos `dsh-talk/speech` sem marca. Em hosts `0.1.0-rc.7` ou mais recentes, uma sessão cujo registro já os contém falha no próximo carregamento a frio com `SessionFormatUnsupportedError`. Reparação: pare o host, faça cópia do registo `.jsonl` da sessão, acrescente `"ignorable":true` como membro de topo em cada linha JSON cujo `"type"` seja `"dsh-talk/speech"` (por exemplo, insira `"ignorable":true,` logo a seguir à `{` inicial) e reabra a sessão. Nada mais muda e nada se perde; novos appends desta versão nunca adicionam eventos sem marca.
