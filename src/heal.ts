@@ -84,8 +84,8 @@ export async function healWindow(context: string, text: string, options?: { endp
 
 /**
  * The one user message of a windowed call. The labels are what the system prompt refers to:
- * CONTEXT is named as not to be cleaned or returned, so the model cannot mistake earlier
- * speech for the draft. An empty context omits its block, because a labeled CONTEXT block
+ * CONTEXT is named as not to be cleaned or returned, so the model is instructed not to treat
+ * earlier speech as the draft. An empty context omits its block, because a labeled CONTEXT block
  * with nothing in it would be an instruction with nothing to settle.
  */
 function windowUserMessage(context: string, text: string): string {

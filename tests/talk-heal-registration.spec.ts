@@ -13,11 +13,12 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/client/index.ts'
 import type { TalkMicInjected } from '../src/client/TalkMicButton.tsx'
 import { HEAL_WINDOW_SYSTEM_PROMPT } from '../src/heal.ts'
-import { TALK_HEAL_DESCRIPTOR, TALK_INVOCATIONS } from '../src/wire.ts'
+import { TALK_HEAL_DESCRIPTOR, TALK_INVOCATIONS, type TalkHeal } from '../src/wire.ts'
 import { mountHarness } from './harness.ts'
 
 const stub = vi.hoisted(() => ({ endpoint: '' }))
@@ -123,14 +124,37 @@ function registrationHost() {
   }
 }
 
+/**
+ * One `talk/heal` invocation, from the client's positional call to the host service, driven by the
+ * real descriptor. This package does not depend on the DSH client Remote proxy or on the host gateway
+ * (`@deepseek-ai/dsh-api-gateway`), so this function stands in for both with the parts the descriptor
+ * fixes: (1) the positional arguments are named by their descriptor wire fields, as the wire carries
+ * them; (2) each field passes its strict codec from the descriptor (`codec.create().parse`); (3) the
+ * decoded values reach the service positionally, in descriptor order; (4) the answer passes the
+ * descriptor's result codec before it returns as a RemoteResult. Not run here: the gateway's exact-field
+ * check, the RPC carrier and the typert-loader registration.
+ */
+async function dispatchHeal(
+  service: { heal: (context: string, text: string) => Promise<TalkHeal> },
+  positional: unknown[],
+): Promise<RemoteResult<TalkHeal>> {
+  const wireArgs: Record<string, unknown> = {}
+  TALK_HEAL_DESCRIPTOR.parameters.forEach((parameter, index) => {
+    wireArgs[parameter.wire] = positional[index]
+  })
+  const decoded = TALK_HEAL_DESCRIPTOR.parameters.map((parameter) => parameter.codec.create().parse(wireArgs[parameter.wire]))
+  const answer = await service.heal(...(decoded as [string, string]))
+  return { ok: true, value: TALK_HEAL_DESCRIPTOR.result.create().parse(answer) }
+}
+
 /** Mount the real host and register the real client, with the talk remote routed to the host service. */
 async function registeredMic() {
   const harness = await mountHarness()
   const host = registrationHost()
-  // The remote call crosses the RPC boundary in production. Here it is the service's own method,
-  // wrapped in the RemoteResult shape the client's unwrap reads.
+  // The remote call crosses the RPC boundary in production. Here it goes through dispatchHeal, which
+  // runs the descriptor's codecs and then calls the real service, so the client's unwrap reads a RemoteResult.
   host.provide('remote.talk', {
-    heal: async (context: string, text: string) => ({ ok: true, value: await harness.service.heal(context, text) }),
+    heal: (...positional: unknown[]) => dispatchHeal(harness.service, positional),
   })
   host.provide('conversation', {})
   host.provide('uiConversation', {
@@ -196,6 +220,13 @@ describe('client registration: the mic heal reaches the model with both argument
         content: 'CONTEXT (earlier speech, do not clean, do not return): alpha beta gamma\nTEXT TO CLEAN (return the cleaned version of exactly this): delta epsilon',
       },
     ])
+  })
+
+  it('a non-string context is refused by the descriptor codec before any model request', async () => {
+    // Breaks if: the dispatch skips the descriptor codec for talk/heal, so a malformed argument reaches the service unchecked. The message is the codec's, not the service's own check.
+    const { injected } = await registeredMic()
+    await expect(injected.heal(42 as unknown as string, 'delta epsilon')).rejects.toThrow(/expected string/iu)
+    expect(seen).toHaveLength(0)
   })
 
   it('an empty context sends only the TEXT TO CLEAN block', async () => {

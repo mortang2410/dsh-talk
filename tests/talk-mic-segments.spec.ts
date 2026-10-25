@@ -1290,6 +1290,29 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(transcriptLog).toEqual([{ raw: pieces.join(' '), cleaned: pieces.join(' '), source: 'model', action: 'draft' }])
   })
 
+  // The window is the last 30 raw words said before the newest segment. These four sizes sit on both
+  // sides of that edge: 0 has no window, 29 and 30 fit whole, and 31 must be cut to its last 30.
+  const wordCount = (text: string | undefined): number => (text === undefined || text === '' ? 0 : text.split(' ').length)
+  for (const earlier of [0, 29, 30, 31]) {
+    it(`a segment after ${String(earlier)} earlier raw words gets a context of ${String(Math.min(earlier, 30))} words`, async () => {
+      // Breaks if: the window is one word short at 29 or 30, a 31-word history is not cut to its last 30 words, or the newest segment is counted among its own context words.
+      const earlierWords = Array.from({ length: earlier }, (_, index) => `earlier${String(index + 1)}`)
+      const newest = 'newest words'
+      const pieces = earlier === 0 ? 1 : 2
+      transcriptQueue = earlier === 0 ? [newest] : [earlierWords.join(' '), newest]
+      await mountAndSettle()
+      await startCapture()
+      // The transcriber shifts transcriptQueue as it goes, so the loop bound is fixed before the loop.
+      for (let piece = 0; piece < pieces; piece += 1) {
+        await speak(1000)
+        await advance(1000)
+      }
+      const last = healCalls[healCalls.length - 1]
+      expect(last).toEqual({ context: earlierWords.slice(-30).join(' '), text: newest })
+      expect(wordCount(last?.context)).toBe(Math.min(earlier, 30))
+    })
+  }
+
   it('two pieces are glued with one space, and the draft holds the model answers, not a copy of the context', async () => {
     // Breaks if: the draft repeats the context, the pieces are joined without a space, or the raw words replace the model's answer for a piece.
     transcriptQueue = ['read the config', 'config for the ssh socket']
@@ -1389,6 +1412,31 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(drafts).toEqual([])
     expect(sent).toEqual([])
     expect(transcriptLog).toEqual([{ raw: 'um', cleaned: '', source: 'model', action: 'none' }])
+  })
+
+  it('after a segment whose cleaned text differs from its raw words, and a segment cleaned to nothing, the next window holds the raw words and not the current segment', async () => {
+    // Breaks if: the window is built from cleaned text instead of raw text, an empty cleaned segment drops its raw words from the window, or the current segment is part of its own window.
+    transcriptQueue = ['um read the config', 'um uh', 'ssh socket path']
+    modelAnswers = ['read the config', '', 'ssh socket path']
+    await mountAndSettle()
+    await startCapture()
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    await speak(1000)
+    await advance(1000)
+    expect(healCalls).toEqual([
+      { context: '', text: 'um read the config' },
+      { context: 'um read the config', text: 'um uh' },
+      { context: 'um read the config um uh', text: 'ssh socket path' },
+    ])
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(drafts).toEqual(['read the config ssh socket path'])
   })
 
   it('a truncated heal answer counts as a failure: its raw words stand in, and a trigger in them still fires', async () => {
