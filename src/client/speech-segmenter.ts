@@ -56,7 +56,7 @@ export interface Segmenter {
 export type SegmenterEvent = { kind: 'segment'; samples: Float32Array } | { kind: 'timeout' }
 
 export function createSegmenter(options: SegmenterOptions): Segmenter {
-  // Build the filter when the capture starts, not in the first onset callback. Measured cold in Node 22.23.4 (2026-10-25, one machine): 4.8 to 5.1 ms at 48 kHz, 6.6 to 10.6 ms at 96 kHz. The times depend on the machine and the Node version.
+  // Build the filter when the capture starts, not in the first onset callback. Measured cold in Node 22.23.4 (2026-10-25, one machine): 4.8 to 5.1 ms at 48 kHz, 6.5 to 10.6 ms at 96 kHz. The times depend on the machine and the Node version.
   if (options.sampleRate > STT_SAMPLE_RATE) filterTableFor(options.sampleRate)
   return {
     sampleRate: options.sampleRate,
