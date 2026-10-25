@@ -315,4 +315,24 @@ describe('conversion while a segment is open', () => {
     // The whole pre-roll is 9600 samples at 16 kHz. The onset call must convert only a small part of it.
     expect(seg.convertedSamples).toBeLessThan(4800)
   })
+
+  it('keeps the whole pre-roll when the segment is flushed right after its onset, at 96 kHz', () => {
+    // Review round 4, R4-3. The onset queues the pre-roll blocks, and each feed call converts only a few of
+    // them. Stopping right after the onset must still convert the queued blocks: without that, most of the
+    // pre-roll is lost. Quiet audio fills the 600 ms pre-roll exactly (60 blocks of 960 at 96 kHz).
+    let state = 4242
+    const random = (): number => {
+      state = (state * 1103515245 + 12345) >>> 0
+      return state / 4294967296
+    }
+    const quiet = Float32Array.from({ length: 960 * 60 }, () => (random() * 2 - 1) * 0.005)
+    const onset = Float32Array.from({ length: 960 }, () => random() * 2 - 1)
+    const seg = createSegmenter({ sampleRate: 96000, threshold: 0.01, silenceMs: 1500 })
+    for (let at = 0; at < quiet.length; at += 960) feedBlock(seg, quiet.slice(at, at + 960))
+    feedBlock(seg, onset)
+    const joined = new Float32Array(quiet.length + onset.length)
+    joined.set(quiet)
+    joined.set(onset, quiet.length)
+    expectSameSamples(flushSegment(seg), oneShotToSttRate(joined, 96000))
+  })
 })

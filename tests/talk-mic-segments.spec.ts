@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { CAPTURE_FLUSH_MESSAGE } from '../src/client/capture-worklet.ts'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
 import { healTranscript } from '../src/heal.ts'
 import type { TalkHeal, TalkStatus, TalkTranscript, TalkVoiceTurn } from '../src/wire.ts'
@@ -101,9 +102,23 @@ class FakeAudioContext {
   }
 }
 
-/** The worklet node: its port is the only part the button uses, and the test calls it to deliver blocks. */
+/**
+ * The worklet node: its port is the only part the button uses, and the test calls it to deliver blocks.
+ * Like the real worklet, a flush message is answered after a macrotask with the partial block the node
+ * holds: `held` is the audio the test kept back from the full blocks (empty unless a test sets it).
+ */
 class FakeWorkletNode {
-  readonly port: { onmessage: ((event: { data: Float32Array }) => void) | null } = { onmessage: null }
+  /** Audio held back from the full blocks, returned as the partial block on a flush. */
+  held: Float32Array = new Float32Array(0)
+  readonly port: { onmessage: ((event: { data: unknown }) => void) | null; postMessage: (data: unknown) => void } = {
+    onmessage: null,
+    postMessage: (data: unknown) => {
+      if (data !== CAPTURE_FLUSH_MESSAGE) return
+      const samples = this.held
+      this.held = new Float32Array(0)
+      setTimeout(() => this.port.onmessage?.({ data: { kind: 'flushed', samples } }), 0)
+    },
+  }
   constructor(_context: unknown, _name: string) {
     workletNodes.push(this)
   }
@@ -622,6 +637,25 @@ describe('TalkMicButton segmented capture (voice-activity detection on)', () => 
     expect(transcribed).toHaveLength(2)
     expect(drafts).toEqual(['first part last words'])
     expect(sent).toEqual([])
+  })
+
+  it('the audio the worklet still holds when the user stops reaches the transcription', async () => {
+    // Review round 4, R4-1: the worklet posts only full blocks, so the partial block it held at a stop was
+    // dropped. The fake holds 100 ms back (1600 samples at 16 kHz); the stop must return it to the segment.
+    transcriptQueue = ['held words']
+    await mountAndSettle()
+    await startCapture()
+    micLevel = SPEECH_LEVEL
+    await advance(1000)
+    for (const node of workletNodes) node.held = new Float32Array(1600).fill(SPEECH_LEVEL)
+    await act(async () => {
+      button().click()
+    })
+    await flush()
+    await flush()
+    expect(transcribed).toHaveLength(1)
+    // 1000 ms of full blocks (16000 samples) and the 100 ms held back (1600): 17600 samples of 16-bit PCM after a 44-byte header.
+    expect(wavOf(transcribed[0] ?? '').bytes).toBe(44 + 2 * 17600)
   })
 
   it('keeps the audio before a soft onset in the transcribed WAV, so a word start under the energy floor is not lost', async () => {

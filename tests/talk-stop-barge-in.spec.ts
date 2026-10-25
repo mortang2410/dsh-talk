@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { CAPTURE_FLUSH_MESSAGE } from '../src/client/capture-worklet.ts'
 import { TalkMicButton } from '../src/client/TalkMicButton.tsx'
 import { SPEECH_POLL_MS } from '../src/client/speechPoll.ts'
 import {
@@ -137,7 +138,13 @@ class FakeContext {
 /** The capture worklet. The test feeds audio blocks to its port, as the browser's microphone would. */
 class FakeWorkletNode {
   static instances: FakeWorkletNode[] = []
-  readonly port: { onmessage: ((event: { data: Float32Array }) => void) | null } = { onmessage: null }
+  // A flush gets the empty partial block, as the real worklet answers when it holds no audio. Answered after a macrotask.
+  readonly port: { onmessage: ((event: { data: unknown }) => void) | null; postMessage: (data: unknown) => void } = {
+    onmessage: null,
+    postMessage: (data: unknown) => {
+      if (data === CAPTURE_FLUSH_MESSAGE) setTimeout(() => this.port.onmessage?.({ data: { kind: 'flushed', samples: new Float32Array(0) } }), 0)
+    },
+  }
   /** The context the node was created on; its source names the stream the worklet hears. */
   readonly owner: FakeContext
   constructor(context: FakeContext, _name: string) {

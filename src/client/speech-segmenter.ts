@@ -11,9 +11,10 @@ import { STT_SAMPLE_RATE } from './wav.ts'
 import { advanceSilence, CAPTURE_SILENCE_TIMEOUT_MS, isSpeechFrame, rmsOf, silenceTrips } from './vad.ts'
 
 /**
- * Audio kept before the block that opens a segment. The energy floor opens the segment on
- * the first block above it, so an unvoiced start (such as "s" or "f") below the floor sits
- * before that block. 600 ms covers that lead-in with margin.
+ * Audio kept before the block that opens a segment: at most 600 ms. The energy floor opens the
+ * segment on the first block above it, so an unvoiced start (such as "s" or "f") below the floor
+ * sits before that block. The bound is a choice: quieter audio more than PRE_ROLL_MS before the
+ * onset is not kept, so a soft lead-in longer than PRE_ROLL_MS loses its earliest part.
  */
 export const PRE_ROLL_MS = 600
 
@@ -55,7 +56,7 @@ export interface Segmenter {
 export type SegmenterEvent = { kind: 'segment'; samples: Float32Array } | { kind: 'timeout' }
 
 export function createSegmenter(options: SegmenterOptions): Segmenter {
-  // Build the filter when the capture starts, not in the first onset callback. Measured in Node: about 2 ms at 48 kHz, about 10 ms at 96 kHz.
+  // Build the filter when the capture starts, not in the first onset callback. Measured cold in Node 22.23.4 (2026-10-25, one machine): 4.8 to 5.1 ms at 48 kHz, 6.6 to 10.6 ms at 96 kHz. The times depend on the machine and the Node version.
   if (options.sampleRate > STT_SAMPLE_RATE) filterTableFor(options.sampleRate)
   return {
     sampleRate: options.sampleRate,

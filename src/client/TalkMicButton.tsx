@@ -27,7 +27,7 @@ import {
   LISTENER_TICK_MS,
   rmsOf,
 } from './vad.ts'
-import { CAPTURE_WORKLET_NAME, CAPTURE_WORKLET_SOURCE } from './capture-worklet.ts'
+import { CAPTURE_FLUSH_MESSAGE, CAPTURE_WORKLET_NAME, CAPTURE_WORKLET_SOURCE } from './capture-worklet.ts'
 import { createSegmenter, feedBlock, flushSegment, type Segmenter } from './speech-segmenter.ts'
 import { selectBrowserVoice } from './browserVoice.ts'
 import {
@@ -158,6 +158,13 @@ function detailOf(error: unknown): string {
  */
 const TICK_MS = 500
 
+/**
+ * How long a stop waits for the worklet's answer with its partial block. The answer normally comes
+ * within a few milliseconds (one render quantum is 128 samples, about 3 ms at 48 kHz). The wait is
+ * only a fallback for a context that does not render, such as one still suspended.
+ */
+const FLUSH_REPLY_TIMEOUT_MS = 500
+
 /** How long a first stop press stays armed: the built-in Escape first-press window (stopSequenceMs, 500 ms by default). */
 const ARM_WINDOW_MS = 500
 
@@ -201,6 +208,10 @@ interface SegmentedCapture {
   abandoned: boolean
   /** Set once the final step has been queued, so it runs once. */
   finalized: boolean
+  /** Set once the stop handshake has ended (the worklet answered, or the fallback fired): the graph is torn down. */
+  finished: boolean
+  /** The fallback timer of the stop handshake, cleared when the answer arrives. */
+  flushTimer: ReturnType<typeof setTimeout> | null
   /** Serial chain: every segment and the final step run here, one after another. */
   queue: Promise<void>
   timer: ReturnType<typeof setInterval> | null
@@ -726,8 +737,9 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
   // One audio block from the worklet, in order. The segmenter judges every block: a finished
   // segment is queued for transcription, and the 120-second silence timeout closes the capture.
   // Barge-in comes from the listener alone, so the reply's own echo in this stream cannot cancel the turn.
+  // Blocks keep arriving until the stop handshake ends: the ones posted before its answer are still in the port queue.
   const onBlock = (capture: SegmentedCapture, block: Float32Array): void => {
-    if (capture.closing || capture.abandoned) return
+    if (capture.finished || capture.abandoned) return
     for (const event of feedBlock(capture.segmenter, block)) {
       if (event.kind === 'timeout') {
         closeCapture(capture)
@@ -738,8 +750,21 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
   }
 
-  // Ends the capture: no more detection, the open segment (if any) is flushed and transcribed,
-  // then the final step runs.
+  // The worklet's messages, in order: a full block, or the answer to the stop request.
+  const onPortMessage = (capture: SegmentedCapture, data: unknown): void => {
+    if (ArrayBuffer.isView(data)) {
+      onBlock(capture, data as Float32Array)
+      return
+    }
+    const reply = data as { kind?: unknown; samples?: unknown } | null
+    if (reply !== null && typeof reply === 'object' && reply.kind === 'flushed' && reply.samples instanceof Float32Array) {
+      finishCapture(capture, reply.samples)
+    }
+  }
+
+  // Ends the capture: no more detection and no timeout. The worklet is asked for the partial block it
+  // still holds (audio since its last full block); finishCapture runs when that block arrives, or when
+  // the fallback timer fires if it never does.
   const closeCapture = (capture: SegmentedCapture): void => {
     if (capture.closing) return
     capture.closing = true
@@ -749,6 +774,27 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
     }
     setRecording(false)
     setMic(foldMic(micRef.current, { kind: 'stopped' }))
+    capture.flushTimer = setTimeout(() => finishCapture(capture, null), FLUSH_REPLY_TIMEOUT_MS)
+    capture.graph.node.port.postMessage(CAPTURE_FLUSH_MESSAGE)
+  }
+
+  // The end of the stop handshake, once: the partial block is judged, then the open segment (if any)
+  // is flushed and transcribed, and the final step runs. Every queued segment runs before the final step.
+  const finishCapture = (capture: SegmentedCapture, partial: Float32Array | null): void => {
+    if (capture.finished) return
+    capture.finished = true
+    if (capture.flushTimer !== null) {
+      clearTimeout(capture.flushTimer)
+      capture.flushTimer = null
+    }
+    if (partial !== null && partial.length > 0 && !capture.abandoned) {
+      for (const event of feedBlock(capture.segmenter, partial)) {
+        if (event.kind === 'segment') {
+          const samples = event.samples
+          enqueue(capture, () => processSegment(capture, samples))
+        }
+      }
+    }
     const tail = flushSegment(capture.segmenter)
     teardownGraph(capture.graph)
     if (tail !== null) enqueue(capture, () => processSegment(capture, tail))
@@ -769,10 +815,12 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       closing: false,
       abandoned: false,
       finalized: false,
+      finished: false,
+      flushTimer: null,
       queue: Promise.resolve(),
       timer: null,
     }
-    graph.node.port.onmessage = (event: MessageEvent<Float32Array>) => onBlock(capture, event.data)
+    graph.node.port.onmessage = (event: MessageEvent<unknown>) => onPortMessage(capture, event.data)
     captureRef.current = capture
     // A listener that resolved during the permission wait, or an owned one still open, now hands off to this capture's stream.
     syncListening()
@@ -1103,9 +1151,14 @@ export function TalkMicButton(props: TalkMicProps): ReactNode {
       if (capture !== null) {
         capture.abandoned = true
         capture.closing = true
+        capture.finished = true
         if (capture.timer !== null) {
           clearInterval(capture.timer)
           capture.timer = null
+        }
+        if (capture.flushTimer !== null) {
+          clearTimeout(capture.flushTimer)
+          capture.flushTimer = null
         }
         capture.stream.getTracks().forEach(track => track.stop())
         teardownGraph(capture.graph)

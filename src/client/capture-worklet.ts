@@ -4,11 +4,19 @@
  * each input frame to mono and posts every CAPTURE_BLOCK_SAMPLES block to the main thread as a
  * transferred Float32Array. The segmenter then judges every block, so no audio goes unjudged.
  *
+ * Stop handshake: a block is posted only when it is full, so the audio of a partial block would
+ * stay in the processor. The main thread therefore posts CAPTURE_FLUSH_MESSAGE on stop, and the
+ * processor answers with `{ kind: 'flushed', samples }` holding that partial block (possibly
+ * empty). The answer comes after every full block already posted, so the audio order holds.
+ *
  * @module dsh-talk/client/capture-worklet
  */
 
 /** The name the AudioWorkletNode is created with. The processor registers under the same name. */
 export const CAPTURE_WORKLET_NAME = 'dsh-talk-capture'
+
+/** The message the main thread posts to the processor on stop. */
+export const CAPTURE_FLUSH_MESSAGE = 'flush'
 
 /**
  * Samples per posted block. At 48 kHz, 1024 samples is about 21 ms: a speech onset is judged
@@ -26,6 +34,13 @@ class DshTalkCapture extends AudioWorkletProcessor {
     super()
     this.block = new Float32Array(${CAPTURE_BLOCK_SAMPLES})
     this.filled = 0
+    this.port.onmessage = (event) => {
+      if (event.data !== '${CAPTURE_FLUSH_MESSAGE}') return
+      const partial = this.block.slice(0, this.filled)
+      this.block = new Float32Array(${CAPTURE_BLOCK_SAMPLES})
+      this.filled = 0
+      this.port.postMessage({ kind: 'flushed', samples: partial }, [partial.buffer])
+    }
   }
 
   process(inputs) {
